@@ -1,13 +1,28 @@
-using Microsoft.AspNetCore;
+using Feather.GraphQL.Tests;
+using Feather.GraphQL.Tests.StarWars;
+using GraphQL;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 
-namespace IntegrationTestServer;
+var builder = WebApplication.CreateBuilder(args);
 
-public static class Program
+builder.Services.Configure<KestrelServerOptions>(options => options.AllowSynchronousIO = true);
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddStarWarsSchema();
+builder.Services.AddGraphQL(b1 => b1
+        .AddAutoSchema<StarWarsQuery>()
+        .UseApolloTracing(enableMetrics: true)
+        .AddErrorInfoProvider(opt => opt.ExposeExceptionDetails = builder.Environment.IsDevelopment())
+        .AddSystemTextJson());
+
+var app = builder.Build();
+
+if (app.Environment.IsDevelopment())
 {
-    public static void Main(string[] args) => CreateWebHostBuilder(args).Build().Run();
-
-    public static IWebHostBuilder CreateWebHostBuilder(string[] args) =>
-        WebHost.CreateDefaultBuilder(args)
-            .UseStartup<Startup>()
-            .ConfigureLogging((_, logging) => logging.SetMinimumLevel(LogLevel.Debug));
+    app.UseDeveloperExceptionPage();
 }
+
+app.UseWebSockets();
+
+app.UseGraphQL();
+
+app.Run();

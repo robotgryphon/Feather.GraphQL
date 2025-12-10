@@ -1,18 +1,18 @@
 <Project>
 
   <PropertyGroup>
+    <TargetFrameworks>net10.0</TargetFrameworks>
     <Authors>Deinok,Alexander Rose,graphql-dotnet</Authors>
     <Description>A GraphQL Client for .NET Standard</Description>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <LangVersion>latest</LangVersion>
     <NeutralLanguage>en-US</NeutralLanguage>
     <NoWarn>$(NoWarn);NU5105</NoWarn> <!--TODO: fix-->
     <NoWarn>$(NoWarn);1591</NoWarn> <!--TODO: write comments to public APIs-->
-    <Nullable>annotations</Nullable>
+    <Nullable>enable</Nullable>
     <PackageIcon>logo.64x64.png</PackageIcon>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/graphql-dotnet/graphql-client</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/robotgryphon/Feather.GraphQL</PackageProjectUrl>
     <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
     <PackageTags>GraphQL</PackageTags>
     <RepositoryType>git</RepositoryType>

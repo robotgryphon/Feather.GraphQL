@@ -2,14 +2,6 @@
 
   <Import Project="../tests.props" />
 
-  <PropertyGroup>
-    <TargetFramework>net8</TargetFramework>
-  </PropertyGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="..\..\src\GraphQL.Primitives\GraphQL.Primitives.csproj" />
-  </ItemGroup>
-
   <ItemGroup>
     <PackageReference Update="coverlet.collector" Version="6.0.2">
       <PrivateAssets>all</PrivateAssets>

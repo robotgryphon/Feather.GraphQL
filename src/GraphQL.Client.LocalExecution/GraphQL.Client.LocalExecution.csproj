@@ -1,17 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <Description>A GraphQL Client which executes the queries directly on a provided GraphQL schema using graphql-dotnet</Description>
-    <TargetFramework>netstandard2.0</TargetFramework>
   </PropertyGroup>
-
   <ItemGroup>
-    <PackageReference Include="GraphQL.MicrosoftDI" Version="7.8.0" />
-    <PackageReference Include="System.Reactive" Version="6.0.0" />
+    <PackageReference Include="System.Reactive" />
   </ItemGroup>
-
   <ItemGroup>
     <ProjectReference Include="..\GraphQL.Client.Abstractions\GraphQL.Client.Abstractions.csproj" />
   </ItemGroup>
-
 </Project>

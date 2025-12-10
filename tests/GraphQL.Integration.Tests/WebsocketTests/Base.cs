@@ -20,10 +20,10 @@ namespace GraphQL.Integration.Tests.WebsocketTests;
 public abstract class Base : IAsyncLifetime
 {
     protected readonly ITestOutputHelper Output;
-    protected readonly IntegrationServerTestFixture Fixture;
+    protected readonly IntegrationServerTest Fixture;
     protected GraphQLHttpClient? ChatClient;
 
-    protected Base(ITestOutputHelper output, IntegrationServerTestFixture fixture)
+    protected Base(ITestOutputHelper output, IntegrationServerTest fixture)
     {
         Output = output;
         Fixture = fixture;
@@ -38,7 +38,7 @@ public abstract class Base : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        await Fixture.CreateServer();
+        await Fixture.BeforeAll();
         // make sure the buffer always contains the same message
         Fixture.Server.Services.GetService<Chat>().AddMessage(InitialMessage);
 

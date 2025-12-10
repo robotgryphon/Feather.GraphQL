@@ -1,14 +1,24 @@
-using Microsoft.AspNetCore;
+using GraphQL;
+using GraphQL.Server.Test.GraphQL;
 
-namespace GraphQL.Server.Test;
+var builder = WebApplication.CreateBuilder(args);
 
-public static class Program
+builder.Services.AddGraphQL(builder => builder
+        .AddSchema<TestSchema>()
+        .AddSystemTextJson()
+        .UseApolloTracing(enableMetrics: true)
+        .AddErrorInfoProvider(opt => opt.ExposeExceptionDetails = true)
+);
+
+var app = builder.Build();
+
+if (app.Environment.IsDevelopment())
 {
-    public static async Task Main(string[] args) =>
-        await CreateHostBuilder(args).Build().RunAsync();
-
-    public static IWebHostBuilder CreateHostBuilder(string[] args = null) =>
-        WebHost.CreateDefaultBuilder(args)
-            .UseKestrel(options => options.AllowSynchronousIO = true)
-            .UseStartup<Startup>();
+    app.UseDeveloperExceptionPage();
 }
+
+app.UseHttpsRedirection();
+
+app.UseWebSockets();
+app.UseGraphQL<TestSchema>();
+app.UseGraphQLGraphiQL();

@@ -26,7 +26,7 @@ public class GraphQLQuery : IEquatable<GraphQLQuery>
     public static implicit operator string(GraphQLQuery query)
         => query.Text;
 
-    public bool Equals(GraphQLQuery other) => Sha256Hash == other.Sha256Hash;
+    public bool Equals(GraphQLQuery? other) => Sha256Hash == other?.Sha256Hash;
 
     public override bool Equals(object? obj) => obj is GraphQLQuery other && Equals(other);
 

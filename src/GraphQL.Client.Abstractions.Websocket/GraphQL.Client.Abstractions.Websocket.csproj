@@ -2,7 +2,6 @@
 
   <PropertyGroup>
     <Description>Abstractions for the Websocket transport used in GraphQL.Client</Description>
-    <TargetFramework>netstandard2.0</TargetFramework>
   </PropertyGroup>
 
   <ItemGroup>

@@ -17,8 +17,7 @@
     },
     "IntegrationTestServer": {
       "commandName": "Project",
-      "launchBrowser": true,
-      "launchUrl": "ui/graphiql",
+      "launchBrowser": false,
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       },
