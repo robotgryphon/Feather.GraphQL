@@ -19,7 +19,9 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0
+        fetch-tags: true
+        fetch-depth: 250
+
     - name: Setup .NET SDK
       uses: actions/setup-dotnet@v4
       with:
@@ -27,31 +29,39 @@ jobs:
         source-url: https://nuget.pkg.github.com/robotgryphon/index.json
       env:
         NUGET_AUTH_TOKEN: ${{secrets.GITHUB_TOKEN}}
+
     - name: Restore dotnet tools
       run: dotnet tool restore
-    - name: Fetch complete repository including tags
-      run: git fetch --tags --force --prune && git describe
+
     - name: Generate version info from git history
       run: dotnet gitversion /output json | jq -r 'to_entries|map("GitVersion_\(.key)=\(.value|tostring)")|.[]' >> $GITHUB_ENV
+
     - name: Fail if the version number has not been resolved
       if: ${{ !env.GitVersion_SemVer }}
       run: |
         echo Error! Version number not resolved!
         exit 1
+
     - name: Print current version
       run: echo "Current version is \"$GitVersion_SemVer\""
+
     - name: Install dependencies
       run: dotnet restore
+
     - name: Build solution
       run:  dotnet build --no-restore -c Release
+
     - name: Run Tests
       run: dotnet test -c Release --no-restore --no-build
+
     - name: Create NuGet packages
       run: dotnet pack -c Release --no-restore --no-build -o nupkg
+
     - name: Upload nuget packages as artifacts
       uses: actions/upload-artifact@v4
       with:
         name: nupkg
         path: nupkg
+
     - name: Publish Nuget packages to GitHub registry
       run: dotnet nuget push "nupkg/*" -k ${{secrets.GITHUB_TOKEN}}
