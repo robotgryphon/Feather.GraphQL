@@ -34,16 +34,17 @@ jobs:
       run: dotnet tool restore
 
     - name: Generate version info from git history
-      run:  dotnet gitversion /output json /showvariable SemVer | xargs printf "GitVersion_SemVer=%q" >> $GITHUB_ENV
+      id: version
+      run:  dotnet gitversion /output json /showvariable SemVer | xargs printf "version=%q" >> $GITHUB_OUTPUT
 
     - name: Fail if the version number has not been resolved
-      if: ${{ !env.GitVersion_SemVer }}
+      if: ${{ !steps.version.outputs.version }}
       run: |
         echo Error! Version number not resolved!
         exit 1
 
     - name: Print current version
-      run: echo "Current version is \"$GitVersion_SemVer\""
+      run: echo "Current version is \"${{steps.version.outputs.version}}\""
 
     - name: Install dependencies
       run: dotnet restore

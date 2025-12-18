@@ -26,11 +26,6 @@
   <Folder Name="/src/">
     <Project Path="src/Feather.GraphQL.Abstractions/Feather.GraphQL.Abstractions.csproj" />
     <Project Path="src/Feather.GraphQL.Http/Feather.GraphQL.Http.csproj" />
-    <Project Path="src/Feather.GraphQL.Subscriptions.Abstractions/Feather.GraphQL.Subscriptions.Abstractions.csproj" />
-    <Project Path="src/Feather.GraphQL.Subscriptions/Feather.GraphQL.Subscriptions.csproj" />
-    <Project Path="src/Feather.GraphQL.WebSocket/Feather.GraphQL.WebSocket.csproj" />
-    <Project Path="src/GraphQL.Client.Abstractions.Websocket/GraphQL.Client.Abstractions.Websocket.csproj" />
-    <Project Path="src/GraphQL.Client.LocalExecution/GraphQL.Client.LocalExecution.csproj" />
     <Project Path="src/GraphQL.Primitives/GraphQL.Primitives.csproj" />
   </Folder>
   <Folder Name="/tests/">
