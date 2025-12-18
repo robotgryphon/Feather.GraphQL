@@ -22,6 +22,9 @@ jobs:
         fetch-tags: true
         fetch-depth: 250
 
+    - name: Unshallow
+      run: git fetch --unshallow
+
     - name: Setup .NET SDK
       uses: actions/setup-dotnet@v4
       with:
@@ -35,7 +38,10 @@ jobs:
 
     - name: Generate version info from git history
       id: version
-      run:  dotnet gitversion /output json /showvariable SemVer | xargs printf "version=%q" >> $GITHUB_OUTPUT
+      run:  |
+        dotnet gitversion /output json /showvariable SemVer | xargs printf version=%s >> version.txt
+        echo "" >> version.txt
+        head -n 1 version.txt >> $GITHUB_OUTPUT
 
     - name: Fail if the version number has not been resolved
       if: ${{ !steps.version.outputs.version }}
