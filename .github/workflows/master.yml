@@ -34,7 +34,7 @@ jobs:
       run: dotnet tool restore
 
     - name: Generate version info from git history
-      run: dotnet gitversion /output json | jq -r 'to_entries|map("GitVersion_\(.key)=\(.value|tostring)")|.[]' >> $GITHUB_ENV
+      run: dotnet gitversion | jq -r 'to_entries|map("GitVersion_\(.key)=\(.value|tostring)")|.[]' >> $GITHUB_ENV
 
     - name: Fail if the version number has not been resolved
       if: ${{ !env.GitVersion_SemVer }}
