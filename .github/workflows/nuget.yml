@@ -74,4 +74,4 @@ jobs:
         user: ${{secrets.NUGET_USER}}
         
     - name: Publish Nuget packages to Nuget registry
-      run: dotnet nuget push "nupkg/Feather.GraphQL.*" -api-key ${{steps.login.outputs.NUGET_API_KEY}} --source https://api.nuget.org/v3/index.json
+      run: dotnet nuget push "nupkg/Feather.GraphQL.*" --api-key ${{steps.login.outputs.NUGET_API_KEY}} --source https://api.nuget.org/v3/index.json
