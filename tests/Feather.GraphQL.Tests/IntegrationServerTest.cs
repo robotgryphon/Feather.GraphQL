@@ -1,15 +1,14 @@
 using System.Diagnostics.CodeAnalysis;
-using Feather.GraphQL.Tests;
 using Feather.GraphQL.Tests.StarWars;
 using Feather.GraphQL.Tests.StarWars.Types;
+using GraphQL;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace GraphQL.Integration.Tests.Helpers;
+namespace Feather.GraphQL.Tests;
 
 [TestFixture]
 [SuppressMessage("ReSharper", "UseConfigureAwaitFalse")]

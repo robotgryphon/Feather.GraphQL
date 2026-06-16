@@ -1,8 +1,8 @@
 using System.Net.Http.Json;
 using Feather.GraphQL.Http.Request;
 using Feather.GraphQL.Http.Response;
-using GraphQL.Request;
-using GraphQL.Response;
+using Feather.GraphQL.Request;
+using Feather.GraphQL.Response;
 
 namespace Feather.GraphQL.Http;
 
@@ -10,6 +10,16 @@ public static class HttpClientExtensions
 {
     extension(HttpClient client)
     {
+        public async ValueTask<HttpResponseMessage> SendGraphQLQueryAsync(string request,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(request);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var realRequest = new GraphQLRequest(query: request);
+            return await client.PostGraphQueryAsync(realRequest, cancellationToken).ConfigureAwait(false);
+        }
+
         public async ValueTask<HttpResponseMessage> SendGraphQLQueryAsync(GraphQLRequest request,
                 CancellationToken cancellationToken = default)
         {

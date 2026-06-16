@@ -1,14 +1,13 @@
-using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
+using JetBrains.Annotations;
 
-namespace GraphQL;
+namespace Feather.GraphQL.Primitives;
 
 /// <summary>
 /// Represents a GraphQL Error of a GraphQL Query
 /// </summary>
-public record struct GraphQLError(
-        [property: JsonPropertyName("message")]
-        string Message)
+[PublicAPI]
+public record struct GraphQLError([property: JsonPropertyName("message")] string Message)
 {
     /// <summary>
     /// The locations of the error

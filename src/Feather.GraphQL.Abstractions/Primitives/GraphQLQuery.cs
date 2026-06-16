@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
-namespace GraphQL;
+
+namespace Feather.GraphQL.Primitives;
 
 /// <summary>
 /// Value object representing a GraphQL query string and storing the corresponding APQ hash. <br />

@@ -4,12 +4,10 @@
     <RootNamespace>Feather.GraphQL</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\GraphQL.Primitives\GraphQL.Primitives.csproj" />
-  </ItemGroup>
-  <ItemGroup>
     <PackageReference Update="GitVersion.MsBuild">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
     </PackageReference>
+    <PackageReference Include="JetBrains.Annotations" />
   </ItemGroup>
 </Project>

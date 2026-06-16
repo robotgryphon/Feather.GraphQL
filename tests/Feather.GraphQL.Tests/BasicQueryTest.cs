@@ -1,10 +1,10 @@
 using System.Diagnostics.CodeAnalysis;
 using Feather.GraphQL.Http;
+using Feather.GraphQL.Primitives;
+using Feather.GraphQL.Request;
 using Feather.GraphQL.Tests.StarWars.Client;
-using GraphQL.Integration.Tests.Helpers;
-using GraphQL.Request;
 
-namespace GraphQL.Integration.Tests.APQ;
+namespace Feather.GraphQL.Tests;
 
 [SuppressMessage("ReSharper", "UseConfigureAwaitFalse")]
 public class BasicQueryTest : IntegrationServerTest

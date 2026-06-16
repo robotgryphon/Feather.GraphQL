@@ -1,7 +1,7 @@
 using System.Text.Json;
 using Feather.GraphQL.Http;
 using Feather.GraphQL.Example;
-using GraphQL.Request;
+using Feather.GraphQL.Request;
 
 // ReSharper disable UseConfigureAwaitFalse
 

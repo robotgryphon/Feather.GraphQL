@@ -1,4 +1,4 @@
-using GraphQL.Response;
+using Feather.GraphQL.Response;
 
 #pragma warning disable CS9113 // Parameter is unread.
 

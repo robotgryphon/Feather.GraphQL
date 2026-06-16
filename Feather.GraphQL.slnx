@@ -26,7 +26,6 @@
   <Folder Name="/src/">
     <Project Path="src/Feather.GraphQL.Abstractions/Feather.GraphQL.Abstractions.csproj" />
     <Project Path="src/Feather.GraphQL.Http/Feather.GraphQL.Http.csproj" />
-    <Project Path="src/GraphQL.Primitives/GraphQL.Primitives.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Feather.GraphQL.Tests/Feather.GraphQL.Tests.csproj" />

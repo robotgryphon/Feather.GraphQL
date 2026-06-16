@@ -1,11 +1,11 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json.Serialization;
-using GraphQL;
+using Feather.GraphQL.Primitives;
 
 namespace Feather.GraphQL.Http.Response;
 
-public record GraphQLHttpDataResponse<T>(
+internal record GraphQLHttpDataResponse<T>(
         HttpResponseHeaders ResponseHeaders,
         HttpStatusCode StatusCode
 ) : IGraphQLHttpDataResponse<T>

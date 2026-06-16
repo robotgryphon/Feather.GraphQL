@@ -3,6 +3,7 @@
     <RootNamespace>Feather.GraphQL.Http</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="JetBrains.Annotations" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" PrivateAssets="All" />
     <PackageReference Update="GitVersion.MsBuild">
       <PrivateAssets>all</PrivateAssets>

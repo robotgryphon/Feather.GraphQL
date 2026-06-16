@@ -1,9 +1,11 @@
 using System.Net;
 using System.Net.Http.Headers;
-using GraphQL.Response;
+using Feather.GraphQL.Response;
+using JetBrains.Annotations;
 
 namespace Feather.GraphQL.Http.Response;
 
+[PublicAPI]
 public static class GraphQLHttpResponseExtensions
 {
     extension(IGraphQLResponse response)

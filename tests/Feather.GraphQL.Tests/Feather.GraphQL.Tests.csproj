@@ -29,6 +29,5 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Feather.GraphQL.Abstractions\Feather.GraphQL.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\Feather.GraphQL.Http\Feather.GraphQL.Http.csproj" />
-    <ProjectReference Include="..\..\src\GraphQL.Primitives\GraphQL.Primitives.csproj" />
   </ItemGroup>
 </Project>

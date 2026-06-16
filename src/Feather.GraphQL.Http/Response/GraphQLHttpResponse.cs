@@ -1,15 +1,14 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json.Serialization;
-using GraphQL;
-using GraphQL.Response;
+using Feather.GraphQL.Primitives;
 
 namespace Feather.GraphQL.Http.Response;
 
-public readonly record struct GraphQLHttpResponse(
+internal readonly record struct GraphQLHttpResponse(
         HttpResponseHeaders ResponseHeaders,
         HttpStatusCode StatusCode
-) : IGraphQLHttpResponse, IGraphQLResponse
+) : IGraphQLHttpResponse
 {
     [JsonPropertyName("errors")]
     public GraphQLError[]? Errors { get; init; }

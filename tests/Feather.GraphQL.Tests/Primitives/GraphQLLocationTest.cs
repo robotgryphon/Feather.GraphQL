@@ -1,3 +1,4 @@
+using Feather.GraphQL.Primitives;
 using GraphQL;
 
 namespace Feather.GraphQL.Tests.Primitives;

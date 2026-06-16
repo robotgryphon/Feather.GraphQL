@@ -1,4 +1,6 @@
-namespace GraphQL.Response;
+using Feather.GraphQL.Primitives;
+
+namespace Feather.GraphQL.Response;
 
 public interface IGraphQLResponse
 {

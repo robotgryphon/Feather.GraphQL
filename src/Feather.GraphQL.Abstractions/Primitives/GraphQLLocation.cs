@@ -1,4 +1,4 @@
-namespace GraphQL;
+namespace Feather.GraphQL.Primitives;
 
 /// <summary>
 /// Represents a GraphQL Location of a GraphQL Query

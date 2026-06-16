@@ -1,4 +1,4 @@
-namespace GraphQL.Response;
+namespace Feather.GraphQL.Response;
 
 public interface IGraphQLDataResponse<out TData> : IGraphQLResponse
 {

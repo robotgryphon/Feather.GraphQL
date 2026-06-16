@@ -3,7 +3,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace GraphQL;
+namespace Feather.GraphQL.Primitives;
 
 internal static class Hash
 {
@@ -17,7 +17,7 @@ internal static class Hash
         Debug.Assert(written == expected, (string)$"Encoding.UTF8.GetBytes returned unexpected bytes: {written} instead of {expected}");
 
         var shaShared = Interlocked.Exchange(ref _sha256, null) ?? SHA256.Create();
-        
+
         Span<byte> bytes = stackalloc byte[32];
         if (!shaShared.TryComputeHash(inputBytes.AsSpan().Slice(0, written), bytes, out int bytesWritten)) // bytesWritten ignored since it is always 32
             throw new InvalidOperationException("Too small buffer for hash");

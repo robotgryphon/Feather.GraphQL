@@ -1,7 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Feather.GraphQL.Primitives;
 
-namespace GraphQL.Converters;
+namespace Feather.GraphQL.Converters;
 
 public class ErrorPathConverter : JsonConverter<ErrorPath>
 {
@@ -25,7 +26,7 @@ public class ErrorPathConverter : JsonConverter<ErrorPath>
         {
             if (reader.TokenType == JsonTokenType.EndArray)
                 break;
-            
+
             var v = ReadValue(ref reader);
             if(v is not null)
                 array.Add(v);

@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
+using Feather.GraphQL.Primitives;
 
-namespace GraphQL.Request;
+namespace Feather.GraphQL.Request;
 
 /// <summary>
 /// A GraphQL request
@@ -75,11 +76,6 @@ public class GraphQLRequest : Dictionary<string, object>, IEquatable<GraphQLRequ
             this(query.Text, variables, operationName, extensions)
     {
         _sha265Hash = query.Sha256Hash;
-    }
-
-    public GraphQLRequest(GraphQLRequest other) :
-            base(other)
-    {
     }
 
     /// <summary>
