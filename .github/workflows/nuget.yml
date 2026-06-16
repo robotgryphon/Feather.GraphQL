@@ -1,6 +1,9 @@
 name: NuGet
 on: workflow_dispatch
 
+permissions:
+  id-token: write  # enable GitHub OIDC token issuance for this job
+      
 env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -64,5 +67,11 @@ jobs:
         name: nupkg
         path: nupkg
 
+    - name: NuGet login (OIDC → temp API key)
+      uses: NuGet/login@v1
+      id: login
+      with:
+        user: ${{secrets.NUGET_USER}}
+        
     - name: Publish Nuget packages to Nuget registry
-      run: dotnet nuget push "nupkg/Feather.GraphQL.*" -k ${{secrets.NUGET_API_KEY}}
+      run: dotnet nuget push "nupkg/Feather.GraphQL.*" -api-key ${{steps.login.outputs.NUGET_API_KEY}} --source https://api.nuget.org/v3/index.json
