@@ -10,12 +10,12 @@ using Feather.GraphQL.Request;
 namespace Feather.GraphQL.Linq.Query;
 
 /// <summary>
-/// Translates a LINQ chain into a <see cref="GraphQLRequest"/>. The end of v1's road: the
-/// response is the caller's to read.
+/// Translates a LINQ chain into a <see cref="GraphQLRequest"/> and the shape needed to read the
+/// reply.
 /// </summary>
 internal sealed class GraphQLQueryTranslator(IFilterTranslationProvider provider)
 {
-    public GraphQLRequest Translate(Expression expression)
+    public TranslatedQuery Translate(Expression expression)
     {
         var chain = QueryChain.Parse(expression);
         var metadata = ReflectionTypeMetadata.For(chain.ElementType);
@@ -61,8 +61,9 @@ internal sealed class GraphQLQueryTranslator(IFilterTranslationProvider provider
 
         var document = new GqlDocument(variables, root);
         var query = new GraphQLQuery(GraphQLDocumentPrinter.Print(document));
+        var request = new GraphQLRequest(query, BuildVariables(variables));
 
-        return new GraphQLRequest(query, BuildVariables(variables));
+        return new TranslatedQuery(request, rootField, metadata.Paging, chain.ElementType, chain.Projection);
     }
 
     /// <summary>
@@ -91,8 +92,8 @@ internal sealed class GraphQLQueryTranslator(IFilterTranslationProvider provider
         => Bind(variables, arguments, argument, type, JsonValue.Create(value));
 
     /// <summary>
-    /// HotChocolate's paging attributes wrap the result, and the wrapper is part of the request
-    /// text — so the translator needs the paging kind even with the response side deferred.
+    /// HotChocolate's paging attributes wrap the result, so the wrapper is part of both the
+    /// request text and the path the materializer walks back down.
     /// </summary>
     private static IReadOnlyList<GqlField> Wrap(PagingKind paging, IReadOnlyList<GqlField> selection)
         => paging switch

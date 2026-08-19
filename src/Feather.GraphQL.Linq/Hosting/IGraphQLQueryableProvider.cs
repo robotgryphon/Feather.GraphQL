@@ -27,4 +27,14 @@ public interface IGraphQLQueryableProvider<TSchema>
 
     /// <summary>Posts an already-translated request.</summary>
     Task<HttpResponseMessage> SendAsync(GraphQLRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>Translates a chain, posts it, and materializes the result.</summary>
+    /// <remarks>
+    /// The terminal to await before handing results to a component that materializes an
+    /// <see cref="IQueryable{T}"/> synchronously — pass it <c>result.AsQueryable()</c>.
+    /// </remarks>
+    Task<T[]> ToArrayAsync<T>(IQueryable<T> query, CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="ToArrayAsync{T}"/>
+    Task<List<T>> ToListAsync<T>(IQueryable<T> query, CancellationToken cancellationToken = default);
 }

@@ -9,7 +9,8 @@ namespace Feather.GraphQL.Linq.Query;
 /// </summary>
 /// <remarks>
 /// A queryable is an unexecuted expression, not a connection — it holds no
-/// <see cref="HttpClient"/> and performs no I/O. Sending it is a separate, explicit step.
+/// <see cref="HttpClient"/> and performs no I/O. Sending it is a separate, explicit step:
+/// <c>ToArrayAsync(client)</c> or <c>ToListAsync(client)</c>.
 /// </remarks>
 [PublicAPI]
 public static class GraphQLQueryable
@@ -37,11 +38,11 @@ internal sealed class GraphQLQueryable<T> : IQueryable<T>, IOrderedQueryable<T>
         Expression = expression;
     }
 
-    // Enumerating would mean executing, and v1 produces requests rather than results.
+    // Enumerating means executing, and executing means I/O that has no synchronous form.
     public IEnumerator<T> GetEnumerator()
         => throw new GraphQLTranslationException("FGQL001",
-            "A GraphQL queryable cannot be enumerated. Call ToGraphQLRequest() to translate it, "
-            + "or SendAsync() to translate and send it.");
+            "A GraphQL queryable cannot be enumerated. Await ToArrayAsync() or ToListAsync() and "
+            + "enumerate the result — or call ToGraphQLRequest() to translate without sending.");
 
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 }
@@ -50,9 +51,12 @@ internal sealed class GraphQLQueryable<T> : IQueryable<T>, IOrderedQueryable<T>
 /// Captures composition and refuses execution.
 /// </summary>
 /// <remarks>
-/// Every v1 terminal reads <see cref="IQueryable.Expression"/> directly, so
-/// <see cref="IQueryProvider.Execute"/> is never called. That is also why v1 sidesteps
-/// <see cref="IQueryable"/>'s lack of an async contract entirely: there is nothing to execute.
+/// Every terminal reads <see cref="IQueryable.Expression"/> directly, so
+/// <see cref="IQueryProvider.Execute"/> is never called. It stays unimplemented on purpose:
+/// <see cref="IQueryProvider"/> has no async member, so honouring it would mean blocking on a
+/// network call from inside <c>ToList()</c>. On Blazor WebAssembly that deadlocks outright — the
+/// response cannot arrive until the thread returns to the browser's event loop — and on Blazor
+/// Server it holds a thread-pool thread per render. Callers await a terminal instead.
 /// </remarks>
 internal sealed class GraphQLQueryProvider : IQueryProvider
 {
@@ -75,7 +79,6 @@ internal sealed class GraphQLQueryProvider : IQueryProvider
 
     private static GraphQLTranslationException NotExecutable()
         => new("FGQL001",
-            "A GraphQL queryable does not execute. Call ToGraphQLRequest() to translate it, or "
-            + "SendAsync() to translate and send it. Result operators such as First(), Count() and "
-            + "ToList() arrive with the response system.");
+            "A GraphQL queryable does not execute synchronously. Await ToArrayAsync() or "
+            + "ToListAsync(), or call ToGraphQLRequest() to translate without sending.");
 }

@@ -1,3 +1,4 @@
+using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
 using Feather.GraphQL.Linq;
 
@@ -40,6 +41,17 @@ public class Book
 {
     public required string Title { get; init; }
     public int Pages { get; init; }
+}
+
+/// <summary>
+/// Names a field through <c>[DataMember]</c>, which the field metadata honours and
+/// System.Text.Json does not — so it only round-trips if the reader is named by the metadata.
+/// </summary>
+[GenerateQueryable("members", FilterInput = "MemberFilterInput")]
+public partial class Member
+{
+    [DataMember(Name = "displayName")]
+    public required string Name { get; init; }
 }
 
 /// <summary>No [GenerateQueryable]: filterable, but not a query root.</summary>

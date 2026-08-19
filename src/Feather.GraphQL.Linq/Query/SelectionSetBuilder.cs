@@ -10,10 +10,10 @@ namespace Feather.GraphQL.Linq.Query;
 /// has no projection.
 /// </summary>
 /// <remarks>
-/// v1 has no materializer, so the projected type is write-only — nothing is ever constructed
-/// from it. <c>Select</c> is a field-selection expression that borrows familiar syntax, which is
-/// why projections are restricted to member-access trees here (FGQL013). That restriction lifts
-/// when the response system lands and there is somewhere for client-side computation to run.
+/// <c>Select</c> is a field-selection expression that borrows familiar syntax, which is why
+/// projections are restricted to member-access trees here (FGQL013). The materializer reads a
+/// projection back by walking these same paths, so whatever this builder cannot name it also
+/// cannot read.
 /// </remarks>
 internal static class SelectionSetBuilder
 {
@@ -133,53 +133,14 @@ internal static class SelectionSetBuilder
     /// <summary>Walks a member chain onto the selection tree, returning the node it lands on.</summary>
     private static Node Descend(Expression expression, ParameterExpression parameter, Node target)
     {
-        var path = new List<string>();
-        var current = expression;
+        var node = target;
+        foreach (string segment in FieldPath.Resolve(expression, parameter))
+            node = node.Child(segment);
 
-        while (true)
-        {
-            switch (current)
-            {
-                case UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } convert:
-                    current = convert.Operand;
-                    continue;
-
-                case MemberExpression member:
-                {
-                    var declaring = member.Member.DeclaringType ?? throw Computation(expression);
-                    var metadata = ReflectionTypeMetadata.For(declaring);
-
-                    if (!metadata.TryGetField(member.Member.Name, out var field))
-                        throw Computation(expression);
-
-                    if (field.IsIgnored)
-                        throw GraphQLTranslationException.IgnoredMember(field.ClrName, declaring);
-
-                    path.Insert(0, field.FieldName);
-                    current = member.Expression ?? throw Computation(expression);
-                    continue;
-                }
-
-                case ParameterExpression p when p == parameter:
-                {
-                    var node = target;
-                    foreach (string segment in path)
-                        node = node.Child(segment);
-
-                    return node;
-                }
-
-                default:
-                    throw Computation(expression);
-            }
-        }
+        return node;
     }
 
-    private static GraphQLTranslationException Computation(Expression node)
-        => new("FGQL013",
-            $"'{node}' computes over the projected value. v1 projections select fields only — "
-            + "there is no materializer for client-side computation to run in yet.",
-            node);
+    private static GraphQLTranslationException Computation(Expression node) => FieldPath.Computation(node);
 
     internal static bool IsScalar(Type type)
     {

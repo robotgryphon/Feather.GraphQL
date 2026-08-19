@@ -22,4 +22,16 @@ internal sealed class GraphQLQueryableProvider<TSchema>(
         ArgumentNullException.ThrowIfNull(request);
         return client.SendGraphQLQueryAsync(request, cancellationToken).AsTask();
     }
+
+    public Task<T[]> ToArrayAsync<T>(IQueryable<T> query, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        return query.ToArrayAsync(client, filterProvider, cancellationToken);
+    }
+
+    public Task<List<T>> ToListAsync<T>(IQueryable<T> query, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        return query.ToListAsync(client, filterProvider, cancellationToken);
+    }
 }

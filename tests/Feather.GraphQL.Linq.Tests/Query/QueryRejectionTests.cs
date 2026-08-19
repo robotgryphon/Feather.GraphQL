@@ -37,7 +37,7 @@ public class QueryRejectionTests
             Is.EqualTo("FGQL014"));
 
     [Test]
-    public void Result_operators_are_rejected_until_the_response_system_lands()
+    public void Result_operators_have_no_translation()
         => Assert.That(ThrowsWith(() => GraphQLQueryable.For<Person>().Where(p => p.Age > 1).First()),
             Is.EqualTo("FGQL001"));
 
