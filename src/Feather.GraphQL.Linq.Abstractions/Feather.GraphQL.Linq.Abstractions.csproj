@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Attributes and metadata contracts for Feather.GraphQL LINQ translation</Description>
+    <RootNamespace>Feather.GraphQL.Linq</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Update="GitVersion.MsBuild">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="JetBrains.Annotations" />
+  </ItemGroup>
+</Project>

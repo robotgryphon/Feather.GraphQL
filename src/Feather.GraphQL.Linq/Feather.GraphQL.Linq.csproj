@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>LINQ / IQueryable translation to GraphQL for Feather.GraphQL</Description>
+    <RootNamespace>Feather.GraphQL.Linq</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Update="GitVersion.MsBuild">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="JetBrains.Annotations" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Feather.GraphQL.Linq.Abstractions\Feather.GraphQL.Linq.Abstractions.csproj" />
+    <ProjectReference Include="..\Feather.GraphQL.Abstractions\Feather.GraphQL.Abstractions.csproj" />
+    <ProjectReference Include="..\Feather.GraphQL.Http\Feather.GraphQL.Http.csproj" />
+  </ItemGroup>
+</Project>
