@@ -20,7 +20,7 @@ public static class GraphQLFilterExtensions
     {
         /// <summary>
         /// Lowers the chain's <c>Where</c> clauses to a filter input object, ready to drop into
-        /// <c>GraphQLRequest.Variables</c>. Multiple <c>Where</c> calls merge with <c>&amp;&amp;</c>.
+        /// the request's variables payload. Multiple <c>Where</c> calls merge with <c>&amp;&amp;</c>.
         /// </summary>
         /// <returns>The filter object, or null when the chain has no predicate.</returns>
         /// <exception cref="GraphQLTranslationException">
@@ -95,7 +95,7 @@ public static class GraphQLFilterExtensions
             throw Unconsumed(method, "Skip/Take", "ToGraphQLArguments()");
 
         if (projection && chain.Projection is not null)
-            throw Unconsumed(method, "Select", "ToGraphQLRequest()");
+            throw Unconsumed(method, "Select", "ToGraphQLQuery()");
     }
 
     private static GraphQLTranslationException Unconsumed(string method, string ignored, string alternative)

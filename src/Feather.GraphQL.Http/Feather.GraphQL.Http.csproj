@@ -13,4 +13,11 @@
   <ItemGroup>
     <ProjectReference Include="..\Feather.GraphQL.Abstractions\Feather.GraphQL.Abstractions.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- GraphQLRequest is the internal wire shape; the HttpClient transport package builds one,
+         and the test projects assert on its serialization. Feather.GraphQL.Linq is deliberately
+         absent: it does not reference this assembly at all. -->
+    <InternalsVisibleTo Include="Feather.GraphQL.Linq.Providers.HttpClient" />
+    <InternalsVisibleTo Include="Feather.GraphQL.Tests" />
+  </ItemGroup>
 </Project>

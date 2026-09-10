@@ -1,0 +1,38 @@
+using System.Linq.Expressions;
+using System.Diagnostics.CodeAnalysis;
+using Feather.GraphQL.Linq.Expressions;
+using JetBrains.Annotations;
+
+namespace Feather.GraphQL.Linq.Query;
+
+/// <summary>
+/// Everything one execution needs: the operation to run, and how to read what comes back.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Translation and materialization are two halves of one decision — emitting <c>nodes</c> and
+/// then looking for <c>items</c> is the bug this type exists to make unrepresentable. The
+/// translator produces both halves at once, so they cannot drift.
+/// </para>
+/// <para>
+/// It names a document and its variables, not a request: nothing here knows about HTTP, which
+/// is what lets a transport be chosen rather than assumed. See
+/// <see cref="Execution.IGraphQLQueryExecutor"/>.
+/// </para>
+/// </remarks>
+/// <param name="Query">The printed document, parameterized: this is what gets sent.</param>
+/// <param name="Variables">Every argument the chain bound, keyed by variable name.</param>
+/// <param name="ElementType">The queried element type, from the chain's source.</param>
+/// <param name="RootField">The field on the schema's <c>Query</c> type holding the result.</param>
+/// <param name="Paging">Which wrapper, if any, sits between the root field and the elements.</param>
+/// <param name="Projection">The <c>Select</c> lambda, applied to each materialized element.</param>
+/// <param name="ResultOperator">How the sequence is reduced to the caller's result.</param>
+[PublicAPI]
+public sealed record GraphQLQueryPlan(
+    [property: StringSyntax("GraphQL")] string Query,
+    IReadOnlyDictionary<string, object?> Variables,
+    Type ElementType,
+    string RootField,
+    PagingKind Paging,
+    LambdaExpression? Projection,
+    QueryResultOperator ResultOperator);

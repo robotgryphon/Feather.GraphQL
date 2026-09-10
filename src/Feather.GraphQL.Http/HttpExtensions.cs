@@ -3,13 +3,13 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 
-namespace Feather.GraphQL.Http.Request;
+namespace Feather.GraphQL.Http;
 
 public static class HttpExtensions
 {
-    public static StringContent AsHttpMessageContent<T>(this T request)
+    private static StringContent AsHttpMessageContent<T>(this T request)
     {
-        var body = JsonSerializer.Serialize(request, new JsonSerializerOptions()
+        string body = JsonSerializer.Serialize(request, new JsonSerializerOptions()
         {
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
                 PropertyNameCaseInsensitive = true
@@ -23,7 +23,7 @@ public static class HttpExtensions
         return content;
     }
 
-    public static HttpRequestMessage AddGraphQLRequestHeaders(this HttpRequestMessage message)
+    private static void AddGraphQLRequestHeaders(this HttpRequestMessage message)
     {
         foreach (string contentType in GraphQLHttpConstants.RESPONSE_CONTENT_TYPES)
             message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(contentType));
@@ -32,7 +32,6 @@ public static class HttpExtensions
 
         var a = typeof(HttpExtensions).Assembly;
         message.Headers.UserAgent.Add(new ProductInfoHeaderValue(a.GetName().Name!, a.GetName().Version!.ToString()));
-        return message;
     }
 
     public static HttpRequestMessage AsHttpPost<T>(this T request)

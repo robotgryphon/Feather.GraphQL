@@ -9,11 +9,20 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
     </PackageReference>
     <PackageReference Include="JetBrains.Annotations" />
-    <PackageReference Include="Microsoft.Extensions.Http" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Feather.GraphQL.Linq.Abstractions\Feather.GraphQL.Linq.Abstractions.csproj" />
-    <ProjectReference Include="..\Feather.GraphQL.Abstractions\Feather.GraphQL.Abstractions.csproj" />
-    <ProjectReference Include="..\Feather.GraphQL.Http\Feather.GraphQL.Http.csproj" />
+    <!-- The tests reach the internal chain parser and query provider directly. -->
+    <InternalsVisibleTo Include="Feather.GraphQL.Linq.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The analyzer ships inside this package, so a consumer gets the compile-time half of the
+         rule table by referencing the library. ReferenceOutputAssembly is false because the
+         library does not call into it; the reference exists to order the build. -->
+    <ProjectReference Include="..\Feather.GraphQL.Linq.Analyzers\Feather.GraphQL.Linq.Analyzers.csproj"
+                      ReferenceOutputAssembly="false" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\Feather.GraphQL.Linq.Analyzers\bin\$(Configuration)\netstandard2.0\Feather.GraphQL.Linq.Analyzers.dll"
+          Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
   </ItemGroup>
 </Project>

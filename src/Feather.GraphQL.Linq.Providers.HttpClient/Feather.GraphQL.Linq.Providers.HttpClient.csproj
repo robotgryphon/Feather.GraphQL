@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>HttpClient transport for the Feather.GraphQL LINQ provider</Description>
+    <!-- Namespace deliberately stops short of the package name: a namespace ending in
+         `HttpClient` would shadow the type of the same name in every file that used it. -->
+    <RootNamespace>Feather.GraphQL.Linq.Providers</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Update="GitVersion.MsBuild">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="JetBrains.Annotations" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Feather.GraphQL.Linq.Providers.HttpClient.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Feather.GraphQL.Linq\Feather.GraphQL.Linq.csproj" />
+    <ProjectReference Include="..\Feather.GraphQL.Http\Feather.GraphQL.Http.csproj" />
+  </ItemGroup>
+</Project>

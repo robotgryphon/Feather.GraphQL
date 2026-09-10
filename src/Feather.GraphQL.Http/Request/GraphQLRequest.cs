@@ -1,19 +1,22 @@
 using System.Diagnostics.CodeAnalysis;
-using Feather.GraphQL.Primitives;
 
-namespace Feather.GraphQL.Request;
+namespace Feather.GraphQL.Http.Request;
 
 /// <summary>
-/// A GraphQL request
+/// The GraphQL over HTTP request body: the query text plus its variables, operation name and
+/// extensions, serialized as the POST payload.
 /// </summary>
-public class GraphQLRequest : Dictionary<string, object>, IEquatable<GraphQLRequest?>
+/// <remarks>
+/// Deliberately not part of the public API. Callers reach a server one of two ways — compose a
+/// chain with the LINQ integration, or hand <c>SendGraphQLQueryAsync</c> a precompiled query
+/// string — and this type is the wire shape both of those funnel into.
+/// </remarks>
+internal class GraphQLRequest : Dictionary<string, object>, IEquatable<GraphQLRequest?>
 {
     public const string OPERATION_NAME_KEY = "operationName";
     public const string QUERY_KEY = "query";
     public const string VARIABLES_KEY = "variables";
     public const string EXTENSIONS_KEY = "extensions";
-
-    private string? _sha265Hash;
 
     /// <summary>
     /// The query string
@@ -26,8 +29,6 @@ public class GraphQLRequest : Dictionary<string, object>, IEquatable<GraphQLRequ
         {
             if (value is null) return;
             this[QUERY_KEY] = value;
-            // if the query string gets overwritten, reset the hash value
-            _sha265Hash = null;
         }
     }
 
@@ -68,14 +69,6 @@ public class GraphQLRequest : Dictionary<string, object>, IEquatable<GraphQLRequ
         Variables = variables;
         OperationName = operationName;
         Extensions = extensions;
-    }
-
-    public GraphQLRequest(GraphQLQuery query, object? variables = null, string? operationName = null,
-            Dictionary<string, object?>? extensions = null)
-            :
-            this(query.Text, variables, operationName, extensions)
-    {
-        _sha265Hash = query.Sha256Hash;
     }
 
     /// <summary>

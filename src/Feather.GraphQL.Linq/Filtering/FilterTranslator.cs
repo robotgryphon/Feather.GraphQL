@@ -40,7 +40,8 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
                 ?? throw GraphQLTranslationException.BadOrderingKey(
                     $"'{key.Body}' is not a member of the element type", key.Body);
 
-            order.Add(Nest(key_.Path, JsonValue.Create(descending ? provider.Descending : provider.Ascending)));
+            order.Add(Nest(key_.Path,
+                JsonValue.Create(new GqlEnumValue(descending ? provider.Descending : provider.Ascending))));
         }
 
         return order;
@@ -553,7 +554,7 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
             case DateTimeOffset dto: return JsonValue.Create(dto.ToString("O"));
             case DateOnly date: return JsonValue.Create(date.ToString("O"));
             case TimeOnly time: return JsonValue.Create(time.ToString("O"));
-            case Enum e: return JsonValue.Create(EnumName(e));
+            case Enum e: return JsonValue.Create(new GqlEnumValue(EnumName(e)));
             case JsonNode node: return node.DeepClone();
         }
 

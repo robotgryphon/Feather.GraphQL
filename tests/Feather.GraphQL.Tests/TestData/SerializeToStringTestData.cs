@@ -1,5 +1,5 @@
 using System.Collections;
-using Feather.GraphQL.Request;
+using Feather.GraphQL.Http.Request;
 
 namespace Feather.GraphQL.Tests.TestData;
 

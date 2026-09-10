@@ -1,7 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
 using Feather.GraphQL.Http;
-using Feather.GraphQL.Primitives;
-using Feather.GraphQL.Request;
 using Feather.GraphQL.Tests.StarWars.Client;
 
 namespace Feather.GraphQL.Tests;
@@ -13,19 +11,17 @@ public class BasicQueryTest : IntegrationServerTest
     [TestCase(2, "Vader")]
     public async Task CanQueryViaProvidedTemplateString(int id, string name)
     {
-        var query = new GraphQLQuery("""
-                                     query Human($id: String!){
-                                        human(id: $id) {
-                                             name
-                                         }
-                                     }
-                                     """);
-
-        var graphQLRequest = new GraphQLRequest(query, new { id = id.ToString() });
+        string query = $$"""
+                        query Human {
+                           human(id: "{{id}}") {
+                                name
+                            }
+                        }
+                        """;
 
         var httpClient = new HttpClient { BaseAddress = new Uri("https://localhost:5000/graphql") };
 
-        var response = await httpClient.SendGraphQLQueryAsync(graphQLRequest, CancellationToken.None);
+        var response = await httpClient.SendGraphQLQueryAsync(query, CancellationToken.None);
 
         Assert.That(response, Is.Not.Null.And.InstanceOf<HttpResponseMessage>());
 

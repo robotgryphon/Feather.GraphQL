@@ -26,11 +26,14 @@
   <Folder Name="/src/">
     <Project Path="src/Feather.GraphQL.Abstractions/Feather.GraphQL.Abstractions.csproj" />
     <Project Path="src/Feather.GraphQL.Http/Feather.GraphQL.Http.csproj" />
-    <Project Path="src/Feather.GraphQL.Linq.Abstractions/Feather.GraphQL.Linq.Abstractions.csproj" />
     <Project Path="src/Feather.GraphQL.Linq/Feather.GraphQL.Linq.csproj" />
+    <Project Path="src/Feather.GraphQL.Linq.Providers.HttpClient/Feather.GraphQL.Linq.Providers.HttpClient.csproj" />
+    <Project Path="src/Feather.GraphQL.Linq.Analyzers/Feather.GraphQL.Linq.Analyzers.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Feather.GraphQL.Tests/Feather.GraphQL.Tests.csproj" />
     <Project Path="tests/Feather.GraphQL.Linq.Tests/Feather.GraphQL.Linq.Tests.csproj" />
+    <Project Path="tests/Feather.GraphQL.Linq.Providers.HttpClient.Tests/Feather.GraphQL.Linq.Providers.HttpClient.Tests.csproj" />
+    <Project Path="tests/Feather.GraphQL.Linq.Analyzers.Tests/Feather.GraphQL.Linq.Analyzers.Tests.csproj" />
   </Folder>
 </Solution>

@@ -10,10 +10,13 @@ namespace Feather.GraphQL.Linq.Query;
 /// has no projection.
 /// </summary>
 /// <remarks>
-/// v1 has no materializer, so the projected type is write-only — nothing is ever constructed
-/// from it. <c>Select</c> is a field-selection expression that borrows familiar syntax, which is
-/// why projections are restricted to member-access trees here (FGQL013). That restriction lifts
-/// when the response system lands and there is somewhere for client-side computation to run.
+/// A projection has two jobs, and this type does the first: name the fields to request. The
+/// second — producing the projected value — happens after materialization, by running the same
+/// lambda over the deserialized element.
+///
+/// It reads member trees, nested LINQ chains over collection members, and object members named
+/// without a projection of their own — enough to say what to ask for. Computation it cannot see
+/// through is FGQL013: requesting the wrong fields is a worse failure than refusing the chain.
 /// </remarks>
 internal static class SelectionSetBuilder
 {
@@ -54,26 +57,49 @@ internal static class SelectionSetBuilder
     }
 
     /// <summary>
-    /// The no-<c>Select</c> default: every mapped scalar. Object and collection fields are never
-    /// walked implicitly — that is how a query quietly grows past a server's depth limit — so a
-    /// type carrying them has to say what it wants.
+    /// The automatic selection: a type's own leaf fields, and nothing else.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Object and collection fields are skipped rather than walked. A scalar is there for the
+    /// asking, so taking every one of them costs nothing anybody would object to; a nested field
+    /// is a second trip through a resolver, and helping yourself to those is how a query quietly
+    /// grows past a server's depth limit — or, when the graph loops back, has no depth at which
+    /// to stop.
+    /// </para>
+    /// <para>
+    /// The consequence is worth stating plainly: a nested field you did not ask for comes back
+    /// unset. Ask for it with a projection.
+    /// </para>
+    /// </remarks>
     private static void CollectScalars(Type elementType, Node root)
     {
         var metadata = ReflectionTypeMetadata.For(elementType);
 
         foreach (var field in metadata.Fields)
         {
-            if (field.IsIgnored)
+            if (field.IsIgnored || !IsLeaf(field.ClrType))
                 continue;
-
-            if (!IsScalar(field.ClrType))
-                throw new GraphQLTranslationException("FGQL014",
-                    $"'{elementType.Name}.{field.ClrName}' is a nested field, so '{elementType.Name}' "
-                    + "requires an explicit Select to say which of its fields to request.");
 
             root.Child(field.FieldName);
         }
+
+        // Every field is nested, so there is nothing to select automatically and a selection set
+        // cannot be empty.
+        if (root.Order.Count == 0)
+            throw new GraphQLTranslationException("FGQL014",
+                $"'{elementType.Name}' has no scalar fields, so there is nothing to select from it "
+                + "automatically. Say which of its fields to request with a Select.");
+    }
+
+    /// <summary>
+    /// A field that needs no selection set of its own: a scalar, or a list of them.
+    /// </summary>
+    private static bool IsLeaf(Type type)
+    {
+        var underlying = Nullable.GetUnderlyingType(type) ?? type;
+
+        return IsScalar(ElementType(underlying) ?? underlying);
     }
 
     private static void Collect(Expression node, ParameterExpression parameter, Node target)
@@ -101,24 +127,16 @@ internal static class SelectionSetBuilder
                 Collect(convert.Operand, parameter, target);
                 return;
 
-            // A nested projection over a collection field: p.Tags.Select(t => t.Name).
-            case MethodCallExpression { Method.Name: nameof(Queryable.Select) } select:
-            {
-                var source = select.Arguments.Count > 1 ? select.Arguments[0] : select.Object!;
-                var inner = select.Arguments[^1] switch
-                {
-                    UnaryExpression { NodeType: ExpressionType.Quote, Operand: LambdaExpression q } => q,
-                    LambdaExpression l => l,
-                    _ => throw Computation(node)
-                };
-
-                var nested = Descend(source, parameter, target);
-                Collect(inner.Body, inner.Parameters[0], nested);
+            // A chain of LINQ operators over a collection field:
+            // p.Attacks.Fast.Select(a => new { a.Name }).ToArray().
+            case MethodCallExpression call when IsLinqOperator(call):
+                // Expand covers the chain that never projects — p.Attacks.Fast.ToArray() — and
+                // returns immediately when a Select in the chain already said what to take.
+                Expand(call.Type, CollectSequence(call, parameter, target));
                 return;
-            }
 
             case MemberExpression member:
-                Descend(member, parameter, target);
+                Expand(member.Type, Descend(member, parameter, target));
                 return;
 
             case ParameterExpression p when p == parameter:
@@ -129,6 +147,96 @@ internal static class SelectionSetBuilder
                 throw Computation(node);
         }
     }
+
+    /// <summary>
+    /// Walks a chain of LINQ operators over a collection member, returning the node its elements
+    /// select into.
+    /// </summary>
+    /// <remarks>
+    /// Every operator in such a chain runs client-side over what came back, so none of them
+    /// changes <em>which</em> fields to request: the source names the collection, and each lambda
+    /// names fields of its elements. That is why <c>Select(…)</c> and
+    /// <c>Select(…).ToArray()</c> ask for exactly the same thing — the materializing call is
+    /// C# needing an array, not GraphQL needing anything.
+    /// </remarks>
+    private static Node CollectSequence(Expression node, ParameterExpression parameter, Node target)
+    {
+        switch (node)
+        {
+            case MethodCallExpression call when IsLinqOperator(call):
+            {
+                bool extension = call.Object is null;
+                var source = extension ? call.Arguments[0] : call.Object!;
+                var nested = CollectSequence(source, parameter, target);
+
+                for (int i = extension ? 1 : 0; i < call.Arguments.Count; i++)
+                {
+                    if (Unquote(call.Arguments[i]) is LambdaExpression lambda)
+                        Collect(lambda.Body, lambda.Parameters[0], nested);
+                }
+
+                return nested;
+            }
+
+            case UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } convert:
+                return CollectSequence(convert.Operand, parameter, target);
+
+            case MemberExpression member:
+                return Descend(member, parameter, target);
+
+            case ParameterExpression p when p == parameter:
+                return target;
+
+            default:
+                throw Computation(node);
+        }
+    }
+
+    /// <summary>
+    /// A GraphQL object field must carry a selection set, so naming one without saying what to
+    /// take from it selects its scalars.
+    /// </summary>
+    /// <remarks>
+    /// Bounded on purpose: that member's own leaf fields, and no further. Nested fields inside it
+    /// are skipped, which is what keeps a projection from walking past a server's depth limit — or
+    /// from looping forever on a graph that points back at itself.
+    /// </remarks>
+    private static void Expand(Type memberType, Node node)
+    {
+        // An explicit projection already said what it wants.
+        if (node.Order.Count > 0)
+            return;
+
+        // A scalar, or a list of them: a selection set on it would be invalid.
+        if (IsLeaf(memberType))
+            return;
+
+        var type = Nullable.GetUnderlyingType(memberType) ?? memberType;
+        CollectScalars(ElementType(type) ?? type, node);
+    }
+
+    /// <summary>The element type of a collection, or null when the type is not one.</summary>
+    private static Type? ElementType(Type type)
+    {
+        if (type == typeof(string) || !typeof(IEnumerable).IsAssignableFrom(type))
+            return null;
+
+        if (type.IsArray)
+            return type.GetElementType();
+
+        return type.GetInterfaces().Append(type)
+            .FirstOrDefault(t => t.IsGenericType && t.GetGenericTypeDefinition() == typeof(IEnumerable<>))
+            ?.GetGenericArguments()[0];
+    }
+
+    private static bool IsLinqOperator(MethodCallExpression call)
+        => call.Method.DeclaringType == typeof(Queryable)
+            || call.Method.DeclaringType == typeof(Enumerable);
+
+    private static Expression Unquote(Expression expression)
+        => expression is UnaryExpression { NodeType: ExpressionType.Quote, Operand: { } operand }
+            ? operand
+            : expression;
 
     /// <summary>Walks a member chain onto the selection tree, returning the node it lands on.</summary>
     private static Node Descend(Expression expression, ParameterExpression parameter, Node target)
@@ -177,8 +285,8 @@ internal static class SelectionSetBuilder
 
     private static GraphQLTranslationException Computation(Expression node)
         => new("FGQL013",
-            $"'{node}' computes over the projected value. v1 projections select fields only — "
-            + "there is no materializer for client-side computation to run in yet.",
+            $"'{node}' computes over the projected value, and the fields it needs cannot be "
+            + "derived from it. Project the fields you want first, then compute over the result.",
             node);
 
     internal static bool IsScalar(Type type)

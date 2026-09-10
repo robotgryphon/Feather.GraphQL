@@ -1,4 +1,8 @@
 using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using Feather.GraphQL.Linq.Filtering;
 
 namespace Feather.GraphQL.Linq.Document;
 
@@ -7,9 +11,9 @@ namespace Feather.GraphQL.Linq.Document;
 /// variable numbering, single-space separators, no incidental whitespace.
 /// </summary>
 /// <remarks>
-/// Canonical output is a requirement rather than a nicety. It is what makes the SHA-256 that
-/// <c>GraphQLQuery</c> computes a stable APQ key across processes, and what makes golden-file
-/// tests meaningful — two structurally identical queries must print byte-identically.
+/// Canonical output is a requirement rather than a nicety. It is what lets a hash of the printed
+/// text serve as a stable APQ key across processes, and what makes golden-file tests meaningful —
+/// two structurally identical queries must print byte-identically.
 /// </remarks>
 internal static class GraphQLDocumentPrinter
 {
@@ -37,6 +41,130 @@ internal static class GraphQLDocumentPrinter
         builder.Append(" }");
 
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// Prints the same document with every variable substituted for its value.
+    /// </summary>
+    /// <remarks>
+    /// For reading, not for sending. The parameterized form is what goes over the wire — it is
+    /// what makes one APQ hash cover every predicate of a given shape, and what makes injection
+    /// structurally impossible — but it also means the printed document says <c>where: $v0</c>
+    /// and nothing about what was actually asked. This form answers that question, and is
+    /// self-contained enough to paste into a playground.
+    /// </remarks>
+    /// <summary>
+    /// Relaxed escaping, because this output is read by people and pasted into playgrounds
+    /// rather than embedded in HTML. The default encoder would render a quote as <c>\u0022</c>
+    /// and every accented letter as an escape — valid GraphQL, unreadable as a diagnostic.
+    /// </summary>
+    private static readonly JsonSerializerOptions _literals =
+        new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+    public static string PrintInline(GqlDocument document)
+    {
+        var values = new Dictionary<string, JsonNode?>(document.Variables.Count, StringComparer.Ordinal);
+        foreach (var variable in document.Variables)
+            values[variable.Name] = variable.Value;
+
+        // No variables are declared, because none are referenced.
+        var builder = new StringBuilder("query { ");
+        PrintField(builder, document.Root, values);
+        builder.Append(" }");
+
+        return builder.ToString();
+    }
+
+    private static void PrintField(StringBuilder builder, GqlField field, Dictionary<string, JsonNode?> values)
+    {
+        builder.Append(field.Name);
+
+        if (field.Arguments.Count > 0)
+        {
+            builder.Append('(');
+            for (int i = 0; i < field.Arguments.Count; i++)
+            {
+                if (i > 0)
+                    builder.Append(", ");
+
+                builder.Append(field.Arguments[i].Name).Append(": ");
+                PrintValue(builder, values.GetValueOrDefault(field.Arguments[i].VariableName));
+            }
+
+            builder.Append(')');
+        }
+
+        if (field.Selection.Count == 0)
+            return;
+
+        builder.Append(" { ");
+        for (int i = 0; i < field.Selection.Count; i++)
+        {
+            if (i > 0)
+                builder.Append(' ');
+
+            PrintField(builder, field.Selection[i], values);
+        }
+
+        builder.Append(" }");
+    }
+
+    /// <summary>
+    /// Writes a JSON value as a GraphQL literal. The two languages agree on numbers, booleans,
+    /// null and string escaping, so those are handed to the JSON writer; the two that differ are
+    /// object keys, which GraphQL leaves unquoted, and enum values, which it un-quotes entirely.
+    /// </summary>
+    private static void PrintValue(StringBuilder builder, JsonNode? node)
+    {
+        switch (node)
+        {
+            case null:
+                builder.Append("null");
+                return;
+
+            case JsonArray array:
+            {
+                builder.Append('[');
+                for (int i = 0; i < array.Count; i++)
+                {
+                    if (i > 0)
+                        builder.Append(", ");
+
+                    PrintValue(builder, array[i]);
+                }
+
+                builder.Append(']');
+                return;
+            }
+
+            case JsonObject obj:
+            {
+                builder.Append('{');
+                bool first = true;
+                foreach (var (key, value) in obj)
+                {
+                    if (!first)
+                        builder.Append(", ");
+
+                    first = false;
+                    builder.Append(key).Append(": ");
+                    PrintValue(builder, value);
+                }
+
+                builder.Append('}');
+                return;
+            }
+
+            // An enum literal is a bare name; quoting it would make it a String and the server
+            // would reject it.
+            case JsonValue value when value.TryGetValue<GqlEnumValue>(out var enumValue):
+                builder.Append(enumValue.Name);
+                return;
+
+            default:
+                builder.Append(node.ToJsonString(_literals));
+                return;
+        }
     }
 
     private static void PrintField(StringBuilder builder, GqlField field)

@@ -1,40 +1,53 @@
-using System.Text.Json;
-using Feather.GraphQL.Http;
+using System.Text;
+using System.Text.Json.Serialization;
 using Feather.GraphQL.Example;
-using Feather.GraphQL.Request;
+using Feather.GraphQL.Http;
+using Feather.GraphQL.Http.Request;
+using Feather.GraphQL.Linq;
+using Feather.GraphQL.Linq.Providers;
+using Feather.GraphQL.Linq.Query;
+using Microsoft.Extensions.DependencyInjection;
 
 // ReSharper disable UseConfigureAwaitFalse
 
-using var graphQLClient = new HttpClient { BaseAddress = new Uri("https://countries.trevorblades.com/") };
-
-var gqlRequest = new GraphQLRequest
+var services = new ServiceCollection();
+services.AddHttpClient("countries", cl =>
 {
-        Query = "query Countries { countries { name continent { name } } }",
-        OperationName = "Countries"
-};
+    cl.BaseAddress = new Uri("https://countries.trevorblades.com/");
+});
 
-var httpResponse = await graphQLClient.SendGraphQLQueryAsync(gqlRequest);
-if (!httpResponse.IsSuccessStatusCode)
-{
-    string body = await httpResponse.Content.ReadAsStringAsync();
-    Console.WriteLine(body);
-    return;
-}
+var serviceProvider = services.BuildServiceProvider();
 
-var graphQLResponse = await httpResponse.Content.ReadAsGraphQLAsync<CountryAndContinentsResponse>();
+// An ordinary HttpClient. Headers and auth go on it as usual.
+var client = serviceProvider
+    .GetRequiredService<IHttpClientFactory>()
+    .CreateClient("countries");
 
-var response = graphQLResponse!.Data;
+var queryable = client.CreateQueryable<Country>()
+    .Where("filter", (CountryFilter c) => c.Continent == "EU")
+    .Select(c => new GeographyIsFun(c.Name, c.Continent));
 
-Console.WriteLine("raw response:");
-Console.WriteLine(JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true }));
-
-foreach (var c in response.Countries ?? [])
-{
-    Console.WriteLine();
-    Console.WriteLine($"Name: {c.Name}");
-    Console.WriteLine($"Continent: {c.Continent.Name}");
-}
+var rawQuery = queryable.ToGraphQLQuery();
 
 Console.WriteLine();
-Console.WriteLine("Press any key to quit...");
-Console.ReadKey();
+Console.WriteLine("query:");
+Console.WriteLine(rawQuery);
+
+Console.WriteLine();
+foreach (var country in queryable)
+{
+    Console.WriteLine();
+    Console.WriteLine($"Name: {country.Country}");
+    Console.WriteLine($"Continent: {country.Continent}");
+}
+
+/// <summary>
+/// Models <c>CountryFilterInput</c>. Its <c>continent</c> takes a string filter directly, unlike
+/// <see cref="Country.Continent"/>, which is an object in the response.
+/// </summary>
+public class CountryFilter
+{
+    public string? Continent { get; set; }
+}
+
+public record struct GeographyIsFun(string Country, Continent Continent);
