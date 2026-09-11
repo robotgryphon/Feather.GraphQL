@@ -2,6 +2,7 @@ using System.Collections;
 using System.Linq.Expressions;
 using Feather.GraphQL.Linq.Document;
 using Feather.GraphQL.Linq.Metadata;
+using Feather.GraphQL.Linq.Rules;
 
 namespace Feather.GraphQL.Linq.Query;
 
@@ -95,7 +96,7 @@ internal static class SelectionSetBuilder
     /// <summary>
     /// A field that needs no selection set of its own: a scalar, or a list of them.
     /// </summary>
-    private static bool IsLeaf(Type type)
+    internal static bool IsLeaf(Type type)
     {
         var underlying = Nullable.GetUnderlyingType(type) ?? type;
 
@@ -289,20 +290,20 @@ internal static class SelectionSetBuilder
             + "derived from it. Project the fields you want first, then compute over the result.",
             node);
 
+    /// <summary>
+    /// Maps a CLR type onto the shared shape, then applies the shared rule. The mapping is this
+    /// side's business; the rule is not.
+    /// </summary>
     internal static bool IsScalar(Type type)
     {
         var underlying = Nullable.GetUnderlyingType(type) ?? type;
 
-        if (underlying.IsPrimitive || underlying.IsEnum)
-            return true;
-
-        if (underlying == typeof(string) || underlying == typeof(decimal) || underlying == typeof(Guid)
-            || underlying == typeof(DateTime) || underlying == typeof(DateTimeOffset)
-            || underlying == typeof(DateOnly) || underlying == typeof(TimeOnly)
-            || underlying == typeof(TimeSpan) || underlying == typeof(Uri))
-            return true;
-
-        return !typeof(IEnumerable).IsAssignableFrom(underlying) && underlying.IsValueType
-            && underlying.Assembly == typeof(int).Assembly;
+        return GraphQLRules.IsScalar(new TypeShape(
+            underlying.FullName ?? underlying.Name,
+            underlying.IsPrimitive,
+            underlying.IsEnum,
+            underlying.IsValueType,
+            typeof(IEnumerable).IsAssignableFrom(underlying),
+            underlying.Assembly == typeof(int).Assembly));
     }
 }

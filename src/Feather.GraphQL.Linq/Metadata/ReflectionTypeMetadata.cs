@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
 using Feather.GraphQL.Linq.Metadata;
+using Feather.GraphQL.Linq.Rules;
 
 namespace Feather.GraphQL.Linq.Metadata;
 
@@ -42,31 +43,15 @@ internal sealed class ReflectionTypeMetadata : IGraphQLTypeMetadata
     }
 
     /// <summary>
-    /// <c>[JsonPropertyName]</c>, then <c>[DataMember(Name)]</c>, then the member name
-    /// camel-cased — the §3 rule, shared with the generator.
+    /// Reads the attributes this side can see, and hands the rule the values it needs.
     /// </summary>
     private static string ResolveFieldName(PropertyInfo property)
-    {
-        if (property.GetCustomAttribute<JsonPropertyNameAttribute>() is { Name.Length: > 0 } json)
-            return json.Name;
+        => GraphQLRules.FieldName(
+            property.Name,
+            property.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name,
+            property.GetCustomAttribute<DataMemberAttribute>()?.Name);
 
-        if (property.GetCustomAttribute<DataMemberAttribute>() is { Name.Length: > 0 } member)
-            return member.Name!;
-
-        return CamelCase(property.Name);
-    }
-
-    internal static string CamelCase(string name)
-    {
-        if (name.Length == 0 || !char.IsUpper(name[0]))
-            return name;
-
-        return string.Create(name.Length, name, static (span, source) =>
-        {
-            source.AsSpan().CopyTo(span);
-            span[0] = char.ToLowerInvariant(span[0]);
-        });
-    }
+    internal static string CamelCase(string name) => GraphQLRules.CamelCase(name);
 
     public bool TryGetField(string clrName, [NotNullWhen(true)] out GraphQLFieldMetadata? field)
         => _byClrName.TryGetValue(clrName, out field);

@@ -1,15 +1,14 @@
-using System.Text;
-using System.Text.Json.Serialization;
+using System.Diagnostics;
 using Feather.GraphQL.Example;
-using Feather.GraphQL.Http;
-using Feather.GraphQL.Http.Request;
-using Feather.GraphQL.Linq;
 using Feather.GraphQL.Linq.Providers;
 using Feather.GraphQL.Linq.Filtering;
 using Feather.GraphQL.Linq.Query;
 using Microsoft.Extensions.DependencyInjection;
 // ReSharper disable SuggestVarOrType_Elsewhere
 // ReSharper disable UseConfigureAwaitFalse
+
+var sw = new Stopwatch();
+sw.Start();
 
 var services = new ServiceCollection();
 services.AddHttpClient("countries", cl =>
@@ -35,12 +34,17 @@ Console.WriteLine("query:");
 Console.WriteLine(rawQuery);
 
 Console.WriteLine();
-foreach (var country in queryable)
+var countries = await queryable.ToArrayAsync();
+foreach (var country in countries)
 {
     Console.WriteLine();
     Console.WriteLine($"Name: {country.Country}");
     Console.WriteLine($"Continent: {country.Continent}");
 }
+
+sw.Stop();
+
+Console.WriteLine($"Elapsed: {sw.ElapsedMilliseconds} ms");
 
 /// <summary>
 /// Models <c>CountryFilterInput</c>. Its <c>continent</c> takes a string filter directly, unlike

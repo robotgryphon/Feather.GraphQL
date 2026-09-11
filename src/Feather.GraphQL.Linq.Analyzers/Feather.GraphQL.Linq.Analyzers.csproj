@@ -12,6 +12,14 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Feather.GraphQL.Linq.Analyzers.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Linked, not referenced: an analyzer carries its dependencies into the compiler, and one
+         copy of a rule cannot drift from itself. -->
+    <Compile Include="..\Shared\GraphQLRules.cs" Link="Shared\GraphQLRules.cs" />
+  </ItemGroup>
+  <ItemGroup>
     <!-- Release tracking: the rule table, in the form the Roslyn analyzers check. -->
     <AdditionalFiles Include="AnalyzerReleases.Shipped.md" />
     <AdditionalFiles Include="AnalyzerReleases.Unshipped.md" />

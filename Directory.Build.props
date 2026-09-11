@@ -26,6 +26,9 @@
     <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
     <WarningLevel>4</WarningLevel>
     <IsPackable>true</IsPackable>
+    <!-- In-repo projects reference the library by project, so the packed build props that would
+         normally turn this on does not reach them. Consumers get it from the package. -->
+    <InterceptorsNamespaces>$(InterceptorsNamespaces);Feather.GraphQL.Linq.Generated</InterceptorsNamespaces>
   </PropertyGroup>
 
 </Project>

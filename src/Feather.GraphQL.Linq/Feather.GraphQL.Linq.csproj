@@ -4,6 +4,11 @@
     <RootNamespace>Feather.GraphQL.Linq</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <!-- Linked, not referenced: an analyzer carries its dependencies into the compiler, and one
+         copy of a rule cannot drift from itself. -->
+    <Compile Include="..\Shared\GraphQLRules.cs" Link="Shared\GraphQLRules.cs" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Update="GitVersion.MsBuild">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
@@ -13,6 +18,8 @@
   <ItemGroup>
     <!-- The tests reach the internal chain parser and query provider directly. -->
     <InternalsVisibleTo Include="Feather.GraphQL.Linq.Tests" />
+    <InternalsVisibleTo Include="Feather.GraphQL.Linq.Analyzers.Tests" />
+    <InternalsVisibleTo Include="Feather.GraphQL.Linq.Providers.HttpClient.Tests" />
   </ItemGroup>
   <ItemGroup>
     <!-- The analyzer ships inside this package, so a consumer gets the compile-time half of the
@@ -20,6 +27,10 @@
          library does not call into it; the reference exists to order the build. -->
     <ProjectReference Include="..\Feather.GraphQL.Linq.Analyzers\Feather.GraphQL.Linq.Analyzers.csproj"
                       ReferenceOutputAssembly="false" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Turns on the interceptor namespace in every consuming project; see the props itself. -->
+    <None Include="build\Feather.GraphQL.Linq.props" Pack="true" PackagePath="build" Visible="false" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\Feather.GraphQL.Linq.Analyzers\bin\$(Configuration)\netstandard2.0\Feather.GraphQL.Linq.Analyzers.dll"

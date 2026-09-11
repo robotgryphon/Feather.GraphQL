@@ -12,6 +12,7 @@
          VSTest target, so neither `dotnet test` path discovers anything. This runs
          in-process via `dotnet run`. -->
     <GenerateProgramFile>false</GenerateProgramFile>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="NUnit" />
@@ -26,5 +27,9 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Feather.GraphQL.Linq\Feather.GraphQL.Linq.csproj" />
+    <!-- The generator under test. Referenced as an analyzer so its output lands in this
+         assembly, which is also how a consumer gets it from the package. -->
+    <ProjectReference Include="..\..\src\Feather.GraphQL.Linq.Analyzers\Feather.GraphQL.Linq.Analyzers.csproj"
+                      OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>

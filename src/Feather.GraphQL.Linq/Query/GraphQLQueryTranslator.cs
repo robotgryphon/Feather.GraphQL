@@ -19,12 +19,18 @@ namespace Feather.GraphQL.Linq.Query;
 internal sealed class GraphQLQueryTranslator(GraphQLQueryOptions options)
 {
     /// <summary>Translates a chain into the request to send and the shape of its answer.</summary>
-    public GraphQLQueryPlan Translate(Expression expression)
+    /// <param name="expression">The chain to translate.</param>
+    /// <param name="precompiled">
+    /// The document the generator already printed for this chain, when it recognised it. Given
+    /// one, the selection set is not built and the document is not printed — but the chain is
+    /// still walked, because the variables it binds are values and only exist at runtime.
+    /// </param>
+    public GraphQLQueryPlan Translate(Expression expression, string? precompiled = null)
     {
-        var (document, chain, rootField, paging) = Build(expression);
+        var (document, chain, rootField, paging) = Build(expression, precompiled);
 
         return new GraphQLQueryPlan(
-            GraphQLDocumentPrinter.Print(document),
+            precompiled ?? GraphQLDocumentPrinter.Print(document),
             BuildVariables(document.Variables),
             chain.ElementType,
             rootField,
@@ -41,10 +47,11 @@ internal sealed class GraphQLQueryTranslator(GraphQLQueryOptions options)
     /// filled in. Not what gets sent — see <see cref="GraphQLDocumentPrinter.PrintInline"/>.
     /// </remarks>
     public string TranslateInline(Expression expression)
-        => GraphQLDocumentPrinter.PrintInline(Build(expression).Document);
+        => GraphQLDocumentPrinter.PrintInline(Build(expression, precompiled: null).Document);
 
     private (GqlDocument Document, QueryChain Chain, string RootField, PagingKind Paging) Build(
-        Expression expression)
+        Expression expression,
+        string? precompiled)
     {
         var chain = QueryChain.Parse(expression);
 
@@ -91,10 +98,12 @@ internal sealed class GraphQLQueryTranslator(GraphQLQueryOptions options)
         if (chain.TakeLast is { } last)
             Bind(variables, arguments, names.Last, "Int", last);
 
+        // The selection set is the expensive half — it walks the element type and every
+        // projected member — and it is exactly the half a precompiled document already contains.
         var root = new GqlField(rootField)
         {
             Arguments = arguments,
-            Selection = BuildSelection(chain, options)
+            Selection = precompiled is null ? BuildSelection(chain, options) : []
         };
 
         return (new GqlDocument(variables, root), chain, rootField, options.Paging);

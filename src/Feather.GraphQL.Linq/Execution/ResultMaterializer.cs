@@ -1,6 +1,6 @@
 using System.Text.Json;
-using System.Text.Json.Serialization.Metadata;
 using Feather.GraphQL.Linq.Expressions;
+using Feather.GraphQL.Linq.Metadata;
 using Feather.GraphQL.Linq.Query;
 
 namespace Feather.GraphQL.Linq.Execution;
@@ -9,36 +9,20 @@ namespace Feather.GraphQL.Linq.Execution;
 /// Reads a response body into the result the chain's terminal asked for.
 /// </summary>
 /// <remarks>
+/// <para>
 /// The projection is applied here rather than being deserialized into directly: an anonymous
 /// type has no accessible setters and no parameterless constructor, so the elements are
 /// materialized as the queried type first and the compiled <c>Select</c> runs over them. That
 /// also keeps one rule for field naming — the one the selection set was built from.
+/// </para>
+/// <para>
+/// Deserialization goes through a <c>JsonTypeInfo</c> rather than a <see cref="Type"/>, so a
+/// registered <c>JsonSerializerContext</c> supplies the contract and
+/// nothing reflects. See <see cref="GraphQLJsonContextRegistry"/>.
+/// </para>
 /// </remarks>
 internal static class ResultMaterializer
 {
-    private static readonly JsonSerializerOptions _options = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true,
-        TypeInfoResolver = new DefaultJsonTypeInfoResolver { Modifiers = { NothingIsRequired } }
-    };
-
-    /// <summary>
-    /// A projection asks for a subset of the type's fields, so the response legitimately omits
-    /// the rest — including members marked <c>required</c>, which the serializer would otherwise
-    /// refuse to leave unset. Requiredness is the server's contract to enforce, not the
-    /// materializer's, and enforcing it here would make <c>Select(p =&gt; p.Name)</c> fail on any
-    /// type with a required member.
-    /// </summary>
-    private static void NothingIsRequired(JsonTypeInfo info)
-    {
-        if (info.Kind is not JsonTypeInfoKind.Object)
-            return;
-
-        foreach (var property in info.Properties)
-            property.IsRequired = false;
-    }
-
     /// <summary>Materializes the rows the query returned, in server order.</summary>
     public static List<TOut> Rows<TOut>(GraphQLQueryPlan plan, JsonElement data)
     {
@@ -49,23 +33,36 @@ internal static class ResultMaterializer
 
         var rows = new List<TOut>(elements.GetArrayLength());
 
-        // No Select: the queried type is the result type, so one deserialization does it.
-        if (plan.Projection is null)
-        {
-            foreach (var element in elements.EnumerateArray())
-                rows.Add(Deserialize<TOut>(element));
+        // One contract for the queried type, resolved once: generated when a registered context
+        // covers it, reflected when none does.
+        var contract = GraphQLJsonContextRegistry.TypeInfo(plan.ElementType);
 
-            return rows;
-        }
+        // A generated shaper if one was emitted for this projection; otherwise the lambda is
+        // compiled, which is the only step here that generates IL at runtime.
+        var shaper = plan.Projection is null ? null : GraphQLProjectionRegistry.Find(plan.Projection);
+        var compiled = shaper is null ? plan.Projection?.Compile() : null;
 
-        var project = plan.Projection.Compile();
         foreach (var element in elements.EnumerateArray())
         {
-            object? source = element.Deserialize(plan.ElementType, _options);
-            rows.Add((TOut)project.DynamicInvoke(source)!);
+            object? source = element.Deserialize(contract);
+
+            rows.Add(Shape<TOut>(source, shaper, compiled));
         }
 
         return rows;
+    }
+
+    /// <summary>
+    /// Applies the projection: the generated shaper when there is one, the compiled lambda when
+    /// there is not, and neither when the chain had no <c>Select</c>.
+    /// </summary>
+    private static TOut Shape<TOut>(object? source, Func<object?, object?>? shaper, Delegate? compiled)
+    {
+        if (shaper is not null)
+            return (TOut)shaper(source)!;
+
+        // No Select: the queried type is the result type.
+        return compiled is null ? (TOut)source! : (TOut)compiled.DynamicInvoke(source)!;
     }
 
     /// <summary>Reads the <c>totalCount</c> the count translation asked for.</summary>
@@ -173,6 +170,4 @@ internal static class ResultMaterializer
             : throw new GraphQLTranslationException("FGQL018",
                 $"The response has no '{plan.RootField}' field.");
 
-    private static TOut Deserialize<TOut>(JsonElement element)
-        => element.Deserialize<TOut>(_options)!;
 }

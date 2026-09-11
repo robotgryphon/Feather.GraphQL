@@ -1,0 +1,12 @@
+<Project>
+
+  <PropertyGroup>
+    <!--
+      Interceptors are opt-in per namespace, and a package that ships them has to add its own:
+      without this the compiler reports every generated interceptor as an error. Appending rather
+      than assigning leaves any namespace the project already allowed intact.
+    -->
+    <InterceptorsNamespaces>$(InterceptorsNamespaces);Feather.GraphQL.Linq.Generated</InterceptorsNamespaces>
+  </PropertyGroup>
+
+</Project>

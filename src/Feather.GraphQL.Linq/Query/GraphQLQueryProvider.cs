@@ -69,8 +69,18 @@ internal sealed class GraphQLQueryProvider(IGraphQLQueryExecutor? executor, Grap
     /// <summary>What this chain was told about the schema. Shared by every queryable in it.</summary>
     public GraphQLQueryOptions Options { get; } = options;
 
+    /// <summary>
+    /// The document the compiler already printed for this chain, when it could.
+    /// </summary>
+    /// <remarks>
+    /// Held on the provider rather than on the options, because one options instance can be
+    /// shared by several queries — <c>For&lt;T&gt;(executor, options)</c> — while a provider is
+    /// created once per chain, which is exactly the scope a precompiled document is valid for.
+    /// </remarks>
+    public string? PrecompiledDocument { get; set; }
+
     private GraphQLQueryPlan Plan(Expression expression)
-        => new GraphQLQueryTranslator(Options).Translate(expression);
+        => new GraphQLQueryTranslator(Options).Translate(expression, PrecompiledDocument);
 
     /// <summary>
     /// Hands the transport the two things it reads. The rest of the plan stays this side of the

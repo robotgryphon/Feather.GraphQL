@@ -146,20 +146,20 @@ Translation and materialization. Depends on nothing else in the repo.
 | `Filtering/HotChocolateFilterProvider.cs` | `HotChocolateFilterProvider` | The one implementation, and the default. Only `Instance` is needed from outside. | **Keep** |
 | `Execution/IGraphQLQueryExecutor.cs` | `IGraphQLQueryExecutor` | The transport seam. Now takes `(string query, IReadOnlyDictionary<string, object?> variables)` and returns the `data` element — the two things a transport reads, in plain types. | **Keep** |
 
-### Built for a source generator that does not exist yet
+### The source generator's contract
 
-Nothing in the repo generates metadata. The reflection fallback is the only implementation, and
-all three types are referenced only from within `Metadata/`.
+`TypeMetadataGenerator` now emits field tables and calls `Register` from a module initializer in
+the **consumer's** assembly — so these three are load-bearing public API, not speculative. They
+were flagged *Internal* while nothing generated; that is no longer true.
 
 | File | Type | What it is for | Verdict |
 | --- | --- | --- | --- |
-| `Metadata/IGraphQLTypeMetadata.cs` | `IGraphQLTypeMetadata` | A type's CLR-member → GraphQL-field table. | **Internal** |
-| `Metadata/GraphQLFieldMetadata.cs` | `GraphQLFieldMetadata` | One member of that table. | **Internal** |
-| `Metadata/GraphQLTypeMetadataRegistry.cs` | `GraphQLTypeMetadataRegistry` | Where generated metadata would register itself at assembly load. | **Internal** |
+| `Metadata/IGraphQLTypeMetadata.cs` | `IGraphQLTypeMetadata` | A type's CLR-member → GraphQL-field table. Implemented by generated code. | **Keep** |
+| `Metadata/GraphQLFieldMetadata.cs` | `GraphQLFieldMetadata` | One member of that table. Constructed by generated code. | **Keep** |
+| `Metadata/GraphQLTypeMetadataRegistry.cs` | `GraphQLTypeMetadataRegistry` | Where generated metadata registers itself at assembly load. Called from generated code in the consumer's assembly. | **Keep** |
 
-Making these internal is a bet that the generator lands *after* the next release. It has to be
-public before generated code in a **consumer's** assembly can call `Register` — so if the
-generator is close, leave them.
+That bet is settled: the generator landed, so all three stay public. Reflection survives only as
+the fallback for element types the generator cannot see.
 
 ---
 
@@ -209,7 +209,8 @@ overload its own name would remove the collision and cost one rename.
 3. ~~**Cheap** — internalize `HttpExtensions`~~ **done, and better**: the helpers went private
    in the merge, closing the arbitrary-object-to-wire hatch outright. Still free here:
    internalize `GraphQLHttpConstants` and delete the dead `IConfigurableExtensions`.
-4. **Judgement** — internalize the `Metadata` trio, if the generator is not imminent.
+4. ~~**Judgement** — internalize the `Metadata` trio~~ **resolved the other way**: the generator
+   landed, and generated code in a consumer's assembly calls `Register`. They stay public.
 5. **Judgement** — internalize `HttpGraphQLQueryExecutor`, if nobody needs to compose one.
 6. ~~**Breaking, but the biggest win** — trim `GraphQLQueryPlan` to `Query` + `Variables`~~
    **done**, and better than planned: the plan went fully internal and the seam now takes the

@@ -239,6 +239,40 @@ time rather than on the first request:
 It is the same rule the translator enforces, moved earlier — the analyzer stays quiet when it
 cannot follow a projection, and the runtime still catches those.
 
+#### Materializing without reflection
+
+Referencing the package also brings a generator that emits each queried type's field table and
+registers it at load, so translation does not reflect. Reading the response can skip reflection
+too — declare a `JsonSerializerContext` covering the types you query:
+
+```csharp
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+                             PropertyNameCaseInsensitive = true)]
+[JsonSerializable(typeof(Country))]
+[JsonSerializable(typeof(Continent))]
+internal sealed partial class CountrySerializerContext : JsonSerializerContext;
+```
+
+That is the whole of it — the generator finds the context and registers it for you. It has to
+live in your source rather than be generated, because `System.Text.Json`'s generator cannot see
+what another generator emits.
+
+A type no context covers still materializes by reflection, so nothing breaks if you skip this or
+miss a type.
+
+Projections go the same way. When a chain is written as one expression, the generator compiles
+its `Select` at build time instead of emitting IL at runtime:
+
+```csharp
+await client.CreateQueryable<Country>("countries")
+    .Where(c => c.Continent.Name == "Europe")
+    .Select(c => new { c.Name, Continent = c.Continent.Name })   // shaped at build time
+    .ToListAsync(ct);
+```
+
+This applies to anonymous projections over member paths — the common case. A projection the
+generator declines is compiled at runtime as before, so nothing breaks; it is only slower.
+
 Result operators are translated, not applied after the fact: `First()` asks for a page of one,
 `Any()` selects a single scalar, `Count()` reads the connection's `totalCount`, and `Last()`
 reads backwards with cursor paging's `last:`. Where a paging kind cannot express one, it is a

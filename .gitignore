@@ -6,3 +6,4 @@ obj/
 *.user
 nuget/
 .DS_Store
+TestResult.xml

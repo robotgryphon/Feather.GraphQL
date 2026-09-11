@@ -23,5 +23,9 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Feather.GraphQL.Linq.Providers.HttpClient\Feather.GraphQL.Linq.Providers.HttpClient.csproj" />
+    <!-- Referenced as an analyzer so the interceptors it emits land in this assembly, which is
+         also how a consumer gets them from the package. -->
+    <ProjectReference Include="..\..\src\Feather.GraphQL.Linq.Analyzers\Feather.GraphQL.Linq.Analyzers.csproj"
+                      OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>
