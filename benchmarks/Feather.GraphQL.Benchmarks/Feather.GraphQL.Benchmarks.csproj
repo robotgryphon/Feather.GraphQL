@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Feather.GraphQL.Benchmarks</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <!-- BenchmarkDotNet refuses to run a Debug build, and is right to. -->
+    <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
+    <Optimize Condition="'$(Configuration)' == 'Release'">true</Optimize>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" />
+    <!-- Real-looking rows. A payload of "Country 1", "Country 2" compresses and parses unlike
+         anything a server would actually send. -->
+    <PackageReference Include="Bogus" />
+    <!-- The comparison. Given the same HttpClient, the same handler and the same serializer
+         contracts, so what is left is the libraries themselves. -->
+    <PackageReference Include="GraphQL.Client" />
+    <PackageReference Include="GraphQL.Client.Serializer.SystemTextJson" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Feather.GraphQL.Linq.Providers.HttpClient\Feather.GraphQL.Linq.Providers.HttpClient.csproj" />
+    <!-- Referenced as an analyzer so the metadata tables and interceptors land here too;
+         benchmarking without them would measure a configuration nobody ships. -->
+    <ProjectReference Include="..\..\src\Feather.GraphQL.Linq.Analyzers\Feather.GraphQL.Linq.Analyzers.csproj"
+                      OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>

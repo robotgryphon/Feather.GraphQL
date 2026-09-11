@@ -1,4 +1,6 @@
 using System.Net;
+using System.Text;
+using System.Text.Json;
 using Feather.GraphQL;
 using Feather.GraphQL.Http;
 using Feather.GraphQL.Linq.Query;
@@ -74,6 +76,98 @@ public class HttpExecutorTests
             Assert.That(error.Path, Is.EqualTo(new object[] { "people", 0d, "name" }));
             Assert.That(error.Locations![0].Line, Is.EqualTo(1));
         });
+    }
+
+    /// <summary>
+    /// The request headers are rendered once and reused, so what they render to is worth
+    /// pinning: nothing else in the suite would notice if a cached value came out wrong.
+    /// </summary>
+    [Test]
+    public void The_request_carries_the_GraphQL_headers()
+    {
+        var handler = new StubHandler("""{"data":{"people":[{"name":"Ada"}]}}""");
+
+        Query(handler).Where(p => p.Age > 30).ToArray();
+
+        var request = handler.SentRequest!;
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(request.Headers.Accept.Select(a => a.MediaType),
+                Is.EquivalentTo(GraphQLHttpConstants.RESPONSE_CONTENT_TYPES));
+            Assert.That(request.Headers.AcceptCharset.Single().Value, Is.EqualTo("utf-8"));
+            Assert.That(request.Headers.UserAgent.Single().Product!.Name,
+                Is.EqualTo("Feather.GraphQL.Http"));
+
+            // No charset: some GraphQL servers reject a content type that carries one.
+            Assert.That(request.Content!.Headers.ContentType!.ToString(), Is.EqualTo("application/json"));
+        });
+    }
+
+    /// <summary>
+    /// The reader deserializes <c>data</c> where it finds it rather than scanning past it, so
+    /// the case that has to be proved is the one where it cannot know about the errors yet.
+    /// </summary>
+    [Test]
+    public void Errors_sent_after_data_still_surface_as_a_response_exception()
+    {
+        var handler = new StubHandler(
+            """{"data":{"people":null},"errors":[{"message":"Unknown field 'people'."}]}""");
+
+        var exception = Assert.Throws<GraphQLHttpException>(
+            () => Query(handler).Where(p => p.Age > 30).ToArray());
+
+        Assert.That(exception!.Errors[0].Message, Is.EqualTo("Unknown field 'people'."));
+    }
+
+    /// <summary>
+    /// The same ordering, but with a payload the caller's type cannot be read from at all: the
+    /// errors explain why, and are what the caller is told about.
+    /// </summary>
+    /// <remarks>
+    /// Read typed rather than through the provider, which asks for a <c>JsonElement</c> — a
+    /// shape any valid JSON reads into, so nothing the provider does can make the payload fail
+    /// and the fallback would never run.
+    /// </remarks>
+    [Test]
+    public void Errors_sent_after_an_unreadable_payload_are_preferred_to_the_parse_failure()
+    {
+        var response = Reply("""{"data":"not an object","errors":[{"message":"nope"}]}""");
+
+        var exception = Assert.ThrowsAsync<GraphQLHttpException>(
+            async () => await response.ReadGraphQLAsync<PeopleData>());
+
+        Assert.That(exception!.Errors[0].Message, Is.EqualTo("nope"));
+    }
+
+    /// <summary>An unreadable payload with no errors to explain it is still a parse failure.</summary>
+    [Test]
+    public void An_unreadable_payload_with_no_errors_throws_the_parse_failure()
+    {
+        var response = Reply("""{"data":"not an object"}""");
+
+        Assert.ThrowsAsync<JsonException>(async () => await response.ReadGraphQLAsync<PeopleData>());
+    }
+
+    private static HttpResponseMessage Reply(string json)
+        => new() { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+
+    /// <summary>The shape of a <c>data</c> field, for the reads that do not go through a query.</summary>
+    private sealed class PeopleData
+    {
+        public Person[] People { get; init; } = [];
+    }
+
+    /// <summary>A member the reader does not care about is read past, not tripped over.</summary>
+    [Test]
+    public void Extensions_alongside_the_data_are_ignored()
+    {
+        var handler = new StubHandler(
+            """{"extensions":{"tracing":{"version":1}},"data":{"people":[{"name":"Ada"}]}}""");
+
+        var people = Query(handler).Where(p => p.Age > 30).ToArray();
+
+        Assert.That(people[0].Name, Is.EqualTo("Ada"));
     }
 
     [Test]

@@ -3,6 +3,9 @@
     <File Path="assets/logo.64x64.png" />
     <File Path="assets/logo.svg" />
   </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/Feather.GraphQL.Benchmarks/Feather.GraphQL.Benchmarks.csproj" />
+  </Folder>
   <Folder Name="/examples/">
     <Project Path="examples/Feather.GraphQL.Example/Feather.GraphQL.Example.csproj" />
   </Folder>
