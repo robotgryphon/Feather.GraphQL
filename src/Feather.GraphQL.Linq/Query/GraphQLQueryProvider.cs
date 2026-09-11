@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using Feather.GraphQL.Linq.Execution;
@@ -42,15 +43,26 @@ internal sealed class GraphQLQueryProvider(IGraphQLQueryExecutor? executor, Grap
         CancellationToken cancellationToken)
     {
         var plan = Plan(expression);
-        var data = await Run(plan, cancellationToken).ConfigureAwait(false);
+        var operation = Operation(plan);
 
-        return plan.ResultOperator switch
+        switch (plan.ResultOperator)
         {
-            QueryResultOperator.Count => (TResult)(object)checked((int)ResultMaterializer.Count(plan, data)),
-            QueryResultOperator.LongCount => (TResult)(object)ResultMaterializer.Count(plan, data),
-            QueryResultOperator.Any => (TResult)(object)ResultMaterializer.Any(plan, data),
-            _ => ResultMaterializer.Reduce(plan, ResultMaterializer.Rows<TResult>(plan, data))
-        };
+            case QueryResultOperator.Count:
+                return (TResult)(object)checked((int)await Executor
+                    .ExecuteCountAsync(operation, cancellationToken).ConfigureAwait(false));
+
+            case QueryResultOperator.LongCount:
+                return (TResult)(object)await Executor
+                    .ExecuteCountAsync(operation, cancellationToken).ConfigureAwait(false);
+
+            case QueryResultOperator.Any:
+                return (TResult)(object)await Runner.For(plan.ElementType)
+                    .AnyAsync(Executor, operation, cancellationToken).ConfigureAwait(false);
+
+            default:
+                return ResultMaterializer.Reduce(plan, await Rows<TResult>(plan, operation, cancellationToken)
+                    .ConfigureAwait(false));
+        }
     }
 
     public IReadOnlyList<TElement> ExecuteSequence<TElement>(Expression expression)
@@ -61,10 +73,38 @@ internal sealed class GraphQLQueryProvider(IGraphQLQueryExecutor? executor, Grap
         CancellationToken cancellationToken)
     {
         var plan = Plan(expression);
-        var data = await Run(plan, cancellationToken).ConfigureAwait(false);
 
-        return ResultMaterializer.Rows<TElement>(plan, data);
+        return await Rows<TElement>(plan, Operation(plan), cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Yields the chain's rows as the transport reads them.
+    /// </summary>
+    /// <remarks>
+    /// What <c>AsAsyncEnumerable</c> is for. The buffered path is faster when the whole sequence
+    /// is wanted, which is why every other terminal takes it; this one exists for the caller who
+    /// would rather not hold the sequence at all, or who means to stop partway.
+    /// </remarks>
+    public IAsyncEnumerable<TElement> StreamAsync<TElement>(
+        Expression expression,
+        CancellationToken cancellationToken)
+    {
+        var plan = Plan(expression);
+
+        return Runner.For(plan.ElementType).StreamAsync<TElement>(
+            Executor, Operation(plan), ResultMaterializer.Shaper(plan), cancellationToken);
+    }
+
+    private ValueTask<IReadOnlyList<TOut>> Rows<TOut>(
+        GraphQLQueryPlan plan,
+        GraphQLOperation operation,
+        CancellationToken cancellationToken)
+        => Runner.For(plan.ElementType)
+            .RowsAsync<TOut>(Executor, operation, ResultMaterializer.Shaper(plan), cancellationToken);
+
+    /// <summary>The half of the plan a transport reads.</summary>
+    private static GraphQLOperation Operation(GraphQLQueryPlan plan)
+        => new(plan.Query, plan.Variables, plan.RootField, plan.Paging);
 
     /// <summary>What this chain was told about the schema. Shared by every queryable in it.</summary>
     public GraphQLQueryOptions Options { get; } = options;
@@ -81,15 +121,6 @@ internal sealed class GraphQLQueryProvider(IGraphQLQueryExecutor? executor, Grap
 
     private GraphQLQueryPlan Plan(Expression expression)
         => new GraphQLQueryTranslator(Options).Translate(expression, PrecompiledDocument);
-
-    /// <summary>
-    /// Hands the transport the two things it reads. The rest of the plan stays this side of the
-    /// seam, where the materializer needs it.
-    /// </summary>
-    private ValueTask<System.Text.Json.JsonElement> Run(
-        GraphQLQueryPlan plan,
-        CancellationToken cancellationToken)
-        => Executor.ExecuteAsync(plan.Query, plan.Variables, cancellationToken);
 
     private IGraphQLQueryExecutor Executor
         => executor ?? throw new GraphQLTranslationException("FGQL016",
@@ -109,4 +140,95 @@ internal sealed class GraphQLQueryProvider(IGraphQLQueryExecutor? executor, Grap
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static TResult ConfiguredBlock<TResult>(ValueTask<TResult> task)
         => task.AsTask().ConfigureAwait(false).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Calls the transport with the queried element type, which is only a <see cref="Type"/> here.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The terminal's own generic parameter is the <em>result</em> type, and a projection makes
+    /// that something else entirely — an anonymous type the rows were never deserialized as. So
+    /// the queried type has to be closed over at runtime, and this is the cheap way to do it: one
+    /// object per element type, constructed once and cached, with a generic method the compiler
+    /// resolves statically at each call site. No method is built by reflection.
+    /// </para>
+    /// <para>
+    /// The projection is applied on this side rather than pushed across the seam, because a
+    /// transport has no business knowing a query had a <c>Select</c>.
+    /// </para>
+    /// </remarks>
+    private abstract class Runner
+    {
+        private static readonly ConcurrentDictionary<Type, Runner> _cache = new();
+
+        public static Runner For(Type queried)
+            => _cache.GetOrAdd(queried, static type =>
+                (Runner)Activator.CreateInstance(typeof(Runner<>).MakeGenericType(type))!);
+
+        public abstract ValueTask<IReadOnlyList<TOut>> RowsAsync<TOut>(
+            IGraphQLQueryExecutor executor,
+            GraphQLOperation operation,
+            Func<object?, object?>? shaper,
+            CancellationToken cancellationToken);
+
+        public abstract IAsyncEnumerable<TOut> StreamAsync<TOut>(
+            IGraphQLQueryExecutor executor,
+            GraphQLOperation operation,
+            Func<object?, object?>? shaper,
+            CancellationToken cancellationToken);
+
+        public abstract ValueTask<bool> AnyAsync(
+            IGraphQLQueryExecutor executor,
+            GraphQLOperation operation,
+            CancellationToken cancellationToken);
+    }
+
+    private sealed class Runner<TElement> : Runner
+    {
+        public override async ValueTask<IReadOnlyList<TOut>> RowsAsync<TOut>(
+            IGraphQLQueryExecutor executor,
+            GraphQLOperation operation,
+            Func<object?, object?>? shaper,
+            CancellationToken cancellationToken)
+        {
+            var rows = await executor.ExecuteAsync<TElement>(operation, cancellationToken)
+                .ConfigureAwait(false);
+
+            // No projection: the queried type is the result type, and the list the transport
+            // already built is the answer.
+            if (shaper is null)
+                return (IReadOnlyList<TOut>)(object)rows;
+
+            var shaped = new TOut[rows.Count];
+
+            for (int i = 0; i < rows.Count; i++)
+                shaped[i] = (TOut)shaper(rows[i])!;
+
+            return shaped;
+        }
+
+        public override async IAsyncEnumerable<TOut> StreamAsync<TOut>(
+            IGraphQLQueryExecutor executor,
+            GraphQLOperation operation,
+            Func<object?, object?>? shaper,
+            [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            var rows = executor.StreamAsync<TElement>(operation, cancellationToken);
+
+            await foreach (var row in rows.WithCancellation(cancellationToken).ConfigureAwait(false))
+                yield return shaper is null ? (TOut)(object)row! : (TOut)shaper(row)!;
+        }
+
+        public override async ValueTask<bool> AnyAsync(
+            IGraphQLQueryExecutor executor,
+            GraphQLOperation operation,
+            CancellationToken cancellationToken)
+        {
+            // The translation already asked for a page of one, so this reads a row or nothing.
+            var rows = await executor.ExecuteAsync<TElement>(operation, cancellationToken)
+                .ConfigureAwait(false);
+
+            return rows.Count > 0;
+        }
+    }
 }

@@ -44,7 +44,7 @@ internal static class GraphQLResponseReader
     /// An empty body reads as neither data nor errors rather than as malformed JSON, which is
     /// what a server that answered with nothing at all has actually said.
     /// </remarks>
-    public static GraphQLReply<TData> Read<TData>(byte[] body)
+    public static GraphQLReply<TData> Read<TData>(ReadOnlyMemory<byte> body)
     {
         if (body.Length == 0)
             return new GraphQLReply<TData>();
@@ -55,7 +55,7 @@ internal static class GraphQLResponseReader
             // the serializer takes a single-buffer path that a Utf8JsonReader — which must allow
             // for more segments to come — cannot, and which is worth about a third of the time
             // spent here on a large reply.
-            return JsonSerializer.Deserialize<GraphQLReply<TData>>(body, JsonSerializerOptions.Web)
+            return JsonSerializer.Deserialize<GraphQLReply<TData>>(body.Span, JsonSerializerOptions.Web)
                 ?? new GraphQLReply<TData>();
         }
         catch (JsonException) when (Errors(body) is { Length: > 0 } errors)
@@ -69,6 +69,16 @@ internal static class GraphQLResponseReader
     }
 
     /// <summary>
+    /// Reads a reply's <c>errors</c> and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// For a caller that has already read the reply some other way and needs the errors it was
+    /// told were there — the LINQ transport, which deserializes rows through a contract of its
+    /// own and gets back a flag rather than the errors themselves.
+    /// </remarks>
+    public static GraphQLError[]? ErrorsIn(ReadOnlyMemory<byte> body) => body.Length == 0 ? null : Errors(body);
+
+    /// <summary>
     /// Rescans a reply for its <c>errors</c>, ignoring everything else in it.
     /// </summary>
     /// <remarks>
@@ -77,11 +87,11 @@ internal static class GraphQLResponseReader
     /// envelope first and reading the payload after — is what this reader exists to avoid, and
     /// costs more than the payload-shaped reads it protects.
     /// </remarks>
-    private static GraphQLError[]? Errors(byte[] body)
+    private static GraphQLError[]? Errors(ReadOnlyMemory<byte> body)
     {
         try
         {
-            var reader = new Utf8JsonReader(body);
+            var reader = new Utf8JsonReader(body.Span);
 
             if (!reader.Read() || reader.TokenType is not JsonTokenType.StartObject)
                 return null;

@@ -131,6 +131,9 @@ public static class HttpExtensions
             var req = request.AsHttpPost();
             req.RequestUri = endpoint ?? client.BaseAddress;
 
+            // Headers only: the reply is buffered into pooled memory by whoever reads it, and
+            // letting HttpClient buffer it first would mean holding — and allocating — the same
+            // bytes twice.
             return await client
                     .SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                     .ConfigureAwait(false);
@@ -166,13 +169,12 @@ public static class HttpExtensions
 
             // Buffered before it is parsed, rather than deserialized off the content stream.
             // System.Text.Json's asynchronous reader works over a chain of segments and cannot
-            // see the whole document at once; handed one span it is substantially faster, and a
-            // reply small enough to deserialize is small enough to hold.
-            byte[] body = await response.Content
-                    .ReadAsByteArrayAsync(cancellationToken)
+            // see the whole document at once; handed one span it is substantially faster.
+            using var body = await ResponseBuffer
+                    .ReadAsync(response.Content, cancellationToken)
                     .ConfigureAwait(false);
 
-            var reply = GraphQLResponseReader.Read<TData>(body);
+            var reply = GraphQLResponseReader.Read<TData>(body.Bytes);
 
             if (reply.Errors is { Length: > 0 } errors)
                 throw new GraphQLHttpException(errors, response);

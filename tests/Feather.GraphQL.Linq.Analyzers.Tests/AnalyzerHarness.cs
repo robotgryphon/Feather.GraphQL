@@ -37,7 +37,7 @@ internal static class AnalyzerHarness
         Assert.That(errors, Is.Empty, $"snippet did not compile: {string.Join("; ", errors.Select(e => e.ToString()))}");
 
         var analyzed = compilation
-            .WithAnalyzers(ImmutableArray.Create<DiagnosticAnalyzer>(new ProjectionAnalyzer()))
+            .WithAnalyzers(ImmutableArray.Create<DiagnosticAnalyzer>(new ProjectionAnalyzer(), new UnboundedQueryAnalyzer()))
             .GetAnalyzerDiagnosticsAsync()
             .GetAwaiter()
             .GetResult();

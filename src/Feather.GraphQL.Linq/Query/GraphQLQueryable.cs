@@ -109,15 +109,16 @@ internal sealed class GraphQLQueryable<T> : IQueryable<T>, IOrderedQueryable<T>,
 
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-    public async IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default)
-    {
-        var rows = await _provider.ExecuteSequenceAsync<T>(Expression, cancellationToken)
-            .ConfigureAwait(false);
-
-        foreach (var row in rows)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            yield return row;
-        }
-    }
+    /// <summary>
+    /// Enumerates the query's rows as the transport reads them.
+    /// </summary>
+    /// <remarks>
+    /// Genuinely streamed, which the terminals deliberately are not. Reading the reply in one
+    /// span is faster when the whole sequence is wanted, and <c>ToArray</c>, <c>ToList</c> and
+    /// every result operator want exactly that; this is the caller who does not, and who may
+    /// stop before the end.
+    /// </remarks>
+    public IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default)
+        => _provider.StreamAsync<T>(Expression, cancellationToken)
+            .GetAsyncEnumerator(cancellationToken);
 }

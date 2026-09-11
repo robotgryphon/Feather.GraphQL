@@ -51,7 +51,7 @@ internal static class SelectionSetBuilder
             Collect(projection.Body, projection.Parameters[0], root);
 
         if (root.Order.Count == 0)
-            throw new GraphQLTranslationException("FGQL012",
+            throw new GraphQLTranslationException("FGQL021",
                 $"The query selects no fields from '{elementType.Name}'.");
 
         return root.ToFields();

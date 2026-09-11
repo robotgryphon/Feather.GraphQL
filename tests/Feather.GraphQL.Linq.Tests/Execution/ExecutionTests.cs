@@ -103,6 +103,37 @@ public class ExecutionTests
         Assert.That(executor.Queryable<Person>("people").Where(p => p.Age > 30).ToArray(), Is.Empty);
     }
 
+    /// <summary>
+    /// The reply is read by a converter that walks to the root field, so what it does with a
+    /// field that is not a list at all is its own decision rather than a JsonElement's.
+    /// </summary>
+    [Test]
+    public void A_root_field_that_is_not_a_list_is_FGQL018()
+    {
+        var executor = StubExecutor.Returning("""{"people":"nope"}""");
+
+        var exception = Assert.Throws<GraphQLTranslationException>(
+            () => executor.Queryable<Person>("people").Where(p => p.Age > 30).ToArray());
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(exception!.DiagnosticId, Is.EqualTo("FGQL018"));
+            Assert.That(exception.Message, Does.Contain("String"));
+        });
+    }
+
+    /// <summary>A field the query did not ask for is not the one it asked for.</summary>
+    [Test]
+    public void A_reply_naming_a_different_root_field_is_FGQL018()
+    {
+        var executor = StubExecutor.Returning("""{"humans":[{"name":"Ada"}]}""");
+
+        var exception = Assert.Throws<GraphQLTranslationException>(
+            () => executor.Queryable<Person>("people").Where(p => p.Age > 30).ToArray());
+
+        Assert.That(exception!.DiagnosticId, Is.EqualTo("FGQL018"));
+    }
+
     [Test]
     public void A_paging_mismatch_is_FGQL018()
     {
@@ -152,6 +183,104 @@ public class ExecutionTests
             names.Add(person.Name);
 
         Assert.That(names, Is.EqualTo(new[] { "Ada", "Grace" }));
+    }
+
+    /// <summary>
+    /// The streamed path is a second reader over the same reply, so everything the buffered one
+    /// checks has to be checked there too — and separately, because nothing shares the code.
+    /// </summary>
+    [Test]
+    public void Streaming_a_paging_mismatch_is_FGQL018()
+    {
+        var executor = StubExecutor.Returning("""{"connected":{"items":[]}}""");
+
+        Assert.ThrowsAsync<GraphQLTranslationException>(async () =>
+        {
+            await foreach (var _ in executor
+                .Queryable<CursorPerson>("connected", o => o.Paging = PagingKind.Cursor)
+                .Take(1)
+                .AsAsyncEnumerable())
+            {
+                // The diagnostic is raised before the first row, which is the point.
+            }
+        });
+    }
+
+    [Test]
+    public void Streaming_a_reply_naming_a_different_root_field_is_FGQL018()
+    {
+        var executor = StubExecutor.Returning("""{"humans":[{"name":"Ada"}]}""");
+
+        Assert.ThrowsAsync<GraphQLTranslationException>(async () =>
+        {
+            await foreach (var _ in executor.Queryable<Person>("people")
+                .Where(p => p.Age > 30)
+                .AsAsyncEnumerable())
+            {
+            }
+        });
+    }
+
+    /// <summary>A null root field streams as nothing, exactly as it materializes as nothing.</summary>
+    [Test]
+    public async Task Streaming_a_null_root_field_yields_no_rows()
+    {
+        var executor = StubExecutor.Returning("""{"people":null}""");
+
+        var names = new List<string>();
+
+        await foreach (var person in executor.Queryable<Person>("people")
+            .Where(p => p.Age > 30)
+            .AsAsyncEnumerable())
+        {
+            names.Add(person.Name);
+        }
+
+        Assert.That(names, Is.Empty);
+    }
+
+    /// <summary>
+    /// Stopping early is the thing streaming is for: the rows past the break are never read.
+    /// </summary>
+    [Test]
+    public async Task Streaming_stops_reading_when_the_caller_stops()
+    {
+        var executor = StubExecutor.Returning(
+            """{"people":[{"name":"Ada"},{"name":"Grace"},{"name":"Margaret"}]}""");
+
+        var names = new List<string>();
+
+        await foreach (var person in executor.Queryable<Person>("people")
+            .Where(p => p.Age > 30)
+            .AsAsyncEnumerable())
+        {
+            names.Add(person.Name);
+
+            if (names.Count == 2)
+                break;
+        }
+
+        Assert.That(names, Is.EqualTo(new[] { "Ada", "Grace" }));
+    }
+
+    /// <summary>A projection is applied per row on the way out, as it is on the buffered path.</summary>
+    [Test]
+    public async Task Streaming_applies_the_projection()
+    {
+        var executor = StubExecutor.Returning(
+            """{"people":[{"name":"Ada","emailAddress":"ada@example.test"}]}""");
+
+        var rows = new List<string>();
+
+        await foreach (var row in executor.Queryable<Person>("people")
+            .Where(p => p.Age > 30)
+            .Select(p => new { p.Name, p.Email })
+            .AsAsyncEnumerable())
+        {
+            rows.Add($"{row.Name}/{row.Email}");
+        }
+
+        Assert.That(rows, Is.EqualTo(new[] { "Ada/ada@example.test" }));
     }
 
     /// <summary>The client-less entry point can still translate, but has nowhere to send.</summary>

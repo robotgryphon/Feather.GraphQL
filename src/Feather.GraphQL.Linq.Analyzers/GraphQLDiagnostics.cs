@@ -25,4 +25,24 @@ internal static class GraphQLDiagnostics
         isEnabledByDefault: true,
         description: "Naming an object member selects that member's own scalar fields. A type with "
         + "none of them has nothing to contribute, and a GraphQL selection set cannot be empty.");
+
+    /// <summary>A chain that names no Where, Take or Select, and so asks for every record.</summary>
+    /// <remarks>
+    /// A warning rather than an error, and the distinction is the rule's whole content: such a
+    /// query is valid, runs, and fills in the queried type's scalar fields — which is sometimes
+    /// exactly what was wanted. It is reported because it is far more often a forgotten
+    /// predicate, and because the cost of the mistake is paid by the server rather than here.
+    /// </remarks>
+    public static readonly DiagnosticDescriptor Unbounded = new(
+        "FGQL012",
+        "This query asks for every record",
+        "'{0}' has no Where, Take or Select, so it requests every record the field returns, with "
+        + "every scalar field of '{1}' filled in. Add one of the three if that is not what you "
+        + "meant.",
+        CATEGORY,
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "A query with no predicate, no page and no projection fetches the whole "
+        + "collection. That is a legitimate thing to ask for and runs as written, but it is more "
+        + "often a predicate that was left off.");
 }

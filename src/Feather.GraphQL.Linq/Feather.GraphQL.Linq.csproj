@@ -16,6 +16,11 @@
     <PackageReference Include="JetBrains.Annotations" />
   </ItemGroup>
   <ItemGroup>
+    <!-- The transport that ships beside this one reads replies with the internal reply reader.
+         A transport written elsewhere implements the seam and reads replies its own way; keeping
+         the reader internal is what stops it and its failure signal from being public API. -->
+    <InternalsVisibleTo Include="Feather.GraphQL.Linq.Providers.HttpClient" />
+    <InternalsVisibleTo Include="Feather.GraphQL.Benchmarks" />
     <!-- The tests reach the internal chain parser and query provider directly. -->
     <InternalsVisibleTo Include="Feather.GraphQL.Linq.Tests" />
     <InternalsVisibleTo Include="Feather.GraphQL.Linq.Analyzers.Tests" />

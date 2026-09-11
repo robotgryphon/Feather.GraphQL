@@ -574,8 +574,16 @@ and GraphQL has no such thing. That is `FGQL014`, and it is **decidable from the
 first request.
 
 Separately, an **unbounded** query is `FGQL012`: a chain with no `Where`, no `Take` and
-no `Select` is a fetch-everything request and almost always a mistake. Any one of the
-three satisfies the rule.
+no `Select` requests every record the field returns. Any one of the three satisfies the
+rule.
+
+It is a **warning**, and reported by the analyzer rather than thrown by the translator.
+The severity is the whole content of the rule. Such a query is valid GraphQL, and asking
+for a small reference table with its scalar fields filled in is a real thing to want — so
+it runs, and behaves as any other queryable would. It is still worth saying out loud,
+because far more often the predicate was simply left off, and the cost of that mistake is
+paid by the server. Like `FGQL014`, it is decidable from the source, which is why it
+arrives as a squiggle rather than on the first request.
 
 ### 5.2 Operator table
 
@@ -748,27 +756,104 @@ any reference to `Feather.GraphQL.Http`. Running one is an `IGraphQLQueryExecuto
 `HttpClient` implementation of it lives in `Feather.GraphQL.Linq.Providers.HttpClient` —
 the one assembly that references both.
 
-**The seam is narrower than the plan.** A transport is handed a document and its variables
-and returns a `data` element; it never sees the element type, the paging kind, the
-projection or the result operator, because all four are read by the materializer *after*
-the transport has returned. Passing the whole plan across would have made every one of
-them public to describe a contract that uses two of them. So the plan is internal and the
-seam takes `(string query, IReadOnlyDictionary<string, object?> variables)` — which also
-puts the APQ hash exactly where it can be computed, since the document that crosses the
-seam is the one that goes on the wire.
+**The seam is narrower than the plan.** A transport is handed a `GraphQLOperation` — the
+document, its variables, the root field and how that field pages — and returns rows. It
+never sees the element type's projection or the result operator, because both are read
+after it returns. Passing the whole plan across would have made every part of it public to
+describe a contract that uses four fields.
 
+The root field and its paging are on the transport's side of the line because *finding*
+the rows is the reading half of a transport's job. What is deliberately not on that side
+is any fact about how the reply was parsed. An earlier version returned a carrier with
+`Field`, `Kind`, `Wrapper`, `TotalCount`, `HasData` and `HasErrors` on it, and that was a
+seam artifact rather than a thing: three unrelated concerns bundled together because the
+transport did the deserializing while the materializer did the checking. Every one of those
+checks now happens in `GraphQLReplyReader`, which is where the walk to the root field
+already was, so the seam carries rows and nothing else.
+
+**Why a contract and not an element.** The seam used to return a `JsonElement`, which reads
+well and is the single most expensive thing the library did. A `JsonElement` is a parsed
+document: producing one means reading the whole reply into a metadata tree — on the large
+object heap, for a reply of any size — and the rows then have to be deserialized back *out*
+of that tree, a second pass over everything. At a thousand rows the two extra passes cost
+more than the query, the request and the materialization put together.
+
+Reading the reply in one pass fixes that, and the reading is written once in
+`GraphQLReplyReader` rather than once per transport. That reader is **internal**, shared
+with the `HttpClient` transport rather than published: it is how the one transport in this
+repository reads a reply, not a contract anything depends on. A transport written elsewhere
+implements the seam and reads replies however it likes. Publishing it would have meant
+publishing its failure signal with it, and two more public types describing an
+implementation detail of the transport that ships beside it. What is public is the seam and
+the operation that crosses it, and nothing else.
+
+Two details inside the reader matter more than they look:
+
+- The rows are read by calling the array's own converter, not by re-entering
+  `JsonSerializer` with the reader. Re-entry costs about 110 µs per thousand rows, because
+  a reader may in general have more segments coming and the entry point has to allow for
+  it; inside a converter the reader is already known to hold the whole document.
+- The converter reads the whole reply, envelope included, rather than being wrapped in a
+  type that reads `{data, errors}` around it. A wrapper would have to be closed over the
+  element type to be deserialized in one pass, and the element type is not known until
+  there is a plan. It also cannot name the root field, whose name is a runtime value.
+
+**Three methods, because there are three questions.** `ExecuteAsync` reads every row.
+`ExecuteCountAsync` reads a `totalCount` — its own method because a count query selects a
+number and no rows, so there is no element type for one to be read as, and smuggling it
+through a row carrier is what made that carrier a grab-bag. `StreamAsync` yields rows one
+at a time.
+
+Streaming is opt-in rather than the default, and the numbers are why. Reading a buffered
+reply in one span is about 13% faster over a thousand rows and about 15% faster over a
+handful, which is what `ToArray`, `ToList` and every result operator want — they
+materialize the whole sequence anyway. `AsAsyncEnumerable` is the caller who does not, and
+it is the one terminal that streams. It also stopped being a fiction in the process: it
+used to materialize the entire list and replay it with `yield return`.
+
+What streaming gives is not a shorter wait for the first row — the reply is still buffered
+whole, into pooled memory. It is that the rows never all exist at once, and that abandoning
+the sequence stops the work: rows past the last one asked for are never deserialized, which
+over a thousand rows is most of the cost. Reading off the socket instead was tried and does
+not work: `DeserializeAsyncEnumerable` streams a *top-level* array and then insists on the
+end of the document, so handed the tail of a reply it reads the rows and throws on the `}`
+that closes `data`. Driving a reader across buffer boundaries by hand avoids that but has
+to prove each element is complete before deserializing it — a tokenize per row on top of
+the read, costing more than the buffering it saves.
+
+One consequence is worth stating plainly: a server may send `errors` after `data`, and a
+stream that has already yielded rows cannot take them back. Enumerating to the end still
+raises, so the terminals are unaffected; a caller that breaks early may have read rows from
+a query that then failed.
+
+**What the split costs.** Separating the two modes is not free: routing every terminal
+through a runner that closes over the queried element type costs about 3% at a hundred rows
+and above, against reading the reply straight into the caller's list. It buys the streaming
+terminal and a seam that carries rows rather than a bag of parse facts. That is a real
+trade and not a free win, which is worth saying because the numbers in this file are
+otherwise all in the other direction.
+
+**Errors stay the transport's.** The reader reports only *that* a reply failed, as a
+`GraphQLReplyFailedException` saying which of the two ways it did — errors, or no data at
+all. `Feather.GraphQL.Linq` does not reference the assembly a `GraphQLError` is defined in,
+deliberately, so the LINQ surface stays free of any transport. The transport catches that
+and raises its own, reading the errors through its own types. It costs a second pass over a
+reply whose payload was never deserialized: rows are skipped once errors are known, and
+servers conventionally send errors first.
 
 ```
 client.CreateQueryable<T>(root) … .ToListAsync(ct)
    → read expression tree
    → translate → GqlDocument → canonical print
-   → document text  +  variables                      ← what crosses the transport seam
+   → GraphQLOperation                                 ← what crosses the transport seam
                                           ← Feather.GraphQL.Linq ends here
    → IGraphQLQueryExecutor                            (transport seam)
    → internal wire request + POST                     (Providers.HttpClient)
-   → data → root field → nodes/items                  (paging wrapper the translator emitted)
-   → deserialize elements → apply Select → reduce by result operator
-   → List<T>
+   → buffer the reply into pooled memory              (never a JsonElement)
+   → GraphQLReplyReader: one pass, data → root field → nodes/items → rows
+                                          ← Feather.GraphQL.Linq again
+   → apply Select → reduce by result operator
+   → IReadOnlyList<T>, or a row at a time for AsAsyncEnumerable
 ```
 
 **Two printings, one document.** The parameterized form is what is sent, and §5.3 is why:
@@ -886,7 +971,7 @@ price of the extensions working over sources this library does not own.
 | FGQL009 | Error | `Count()` on a root field with `PagingKind.None` |
 | FGQL010 | — | Retired. Expansion skips nested fields, so a cycle cannot arise |
 | FGQL011 | Error | No root field was named for the query |
-| FGQL012 | Error | Unbounded query — no `Where`, `Take` or `Select` |
+| FGQL012 | Warning | Unbounded query — no `Where`, `Take` or `Select` |
 | FGQL013 | Error | Computation in a projection whose required fields cannot be read from it |
 | FGQL014 | Error | A type has no scalar fields, so there is nothing to select from it |
 | FGQL015 | Error | `Last()` without `PagingKind.Cursor` — nothing to read backwards from |
@@ -895,6 +980,7 @@ price of the extensions working over sources this library does not own.
 | FGQL018 | Error | Response shape contradicts the declared `PagingKind` |
 | FGQL019 | Error | Async terminal used over a provider that is not this one |
 | FGQL020 | Error | One chain filters over both the queried type and a filter shape |
+| FGQL021 | Error | A projection that names no fields at all |
 
 FGQL006 is the honest one. When the analyzer loses the chain, it says so rather than
 pretending, and the runtime raises `GraphQLTranslationException` carrying the same

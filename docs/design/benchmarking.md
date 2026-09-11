@@ -40,9 +40,16 @@ it.
 two is its own overhead, and without them a client that added nothing measurable would still look
 expensive.
 
-`QueryPipeline` is the tier to profile in. Its executor hands back an already-parsed `data`
-element, so a profile taken there is Feather's own code — walking the chain, printing the
-document, materializing rows — rather than `HttpClient`.
+`QueryPipeline` is the tier to profile in. Its executor answers from a fixed byte array, so a
+profile taken there is Feather's own code — walking the chain, printing the document, reading
+the reply, materializing rows — rather than `HttpClient`.
+
+It does include deserializing the reply, and cannot exclude it: since the transport seam takes
+the contract to read the reply through rather than returning a parsed element, reading *is* how
+the rows come to exist. What the tier still excludes is the transport — no socket, no request
+serialization, no buffering of a response that is already an array. Numbers from before that
+change are not comparable with numbers after it: the earlier executor handed back an
+already-parsed element, so the parse sat outside the measurement rather than inside it.
 
 ## Holding everything else equal
 

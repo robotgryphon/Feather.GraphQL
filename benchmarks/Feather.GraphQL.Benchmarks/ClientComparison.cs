@@ -78,6 +78,17 @@ public class ClientComparison
         return (await response.ReadGraphQLAsync<CountriesData>()).Countries.Length;
     }
 
+    /// <summary>
+    /// The LINQ surface end to end: translate, post, materialize.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately unbounded, which is what FGQL012 is about — the row exists to measure the
+    /// cheapest chain the provider accepts, and a predicate or a page would put translation work
+    /// into a number meant to isolate everything else. The document it prints selects only the
+    /// element's scalars, so it is shorter than the one the other two rows post; the reply is the
+    /// same canned payload either way, so the read side being compared is unchanged.
+    /// </remarks>
+#pragma warning disable FGQL012
     [Benchmark(Description = "Feather: LINQ")]
     public async Task<int> FeatherLinq()
     {
@@ -87,6 +98,7 @@ public class ClientComparison
 
         return response.Length;
     }
+#pragma warning restore FGQL012
 
     [Benchmark(Description = "GraphQL.Client: send + read")]
     public async Task<int> Other()

@@ -1,4 +1,4 @@
-using System.Text.Json;
+using System.Linq.Expressions;
 using Feather.GraphQL.Linq.Expressions;
 using Feather.GraphQL.Linq.Metadata;
 using Feather.GraphQL.Linq.Query;
@@ -6,80 +6,45 @@ using Feather.GraphQL.Linq.Query;
 namespace Feather.GraphQL.Linq.Execution;
 
 /// <summary>
-/// Reads a response body into the result the chain's terminal asked for.
+/// Turns the rows a transport returned into the result the chain's terminal asked for.
 /// </summary>
 /// <remarks>
-/// <para>
-/// The projection is applied here rather than being deserialized into directly: an anonymous
-/// type has no accessible setters and no parameterless constructor, so the elements are
-/// materialized as the queried type first and the compiled <c>Select</c> runs over them. That
-/// also keeps one rule for field naming — the one the selection set was built from.
-/// </para>
-/// <para>
-/// Deserialization goes through a <c>JsonTypeInfo</c> rather than a <see cref="Type"/>, so a
-/// registered <c>JsonSerializerContext</c> supplies the contract and
-/// nothing reflects. See <see cref="GraphQLJsonContextRegistry"/>.
-/// </para>
+/// The projection is applied here rather than deserialized into: an anonymous type has no
+/// accessible setters and no parameterless constructor, so the rows are read as the queried type
+/// and the <c>Select</c> runs over them. That also keeps one rule for field naming — the one the
+/// selection set was built from.
 /// </remarks>
 internal static class ResultMaterializer
 {
-    /// <summary>Materializes the rows the query returned, in server order.</summary>
-    public static List<TOut> Rows<TOut>(GraphQLQueryPlan plan, JsonElement data)
-    {
-        var elements = Elements(plan, data);
-
-        if (elements.ValueKind is not JsonValueKind.Array)
-            return [];
-
-        var rows = new List<TOut>(elements.GetArrayLength());
-
-        // One contract for the queried type, resolved once: generated when a registered context
-        // covers it, reflected when none does.
-        var contract = GraphQLJsonContextRegistry.TypeInfo(plan.ElementType);
-
-        // A generated shaper if one was emitted for this projection; otherwise the lambda is
-        // compiled, which is the only step here that generates IL at runtime.
-        var shaper = plan.Projection is null ? null : GraphQLProjectionRegistry.Find(plan.Projection);
-        var compiled = shaper is null ? plan.Projection?.Compile() : null;
-
-        foreach (var element in elements.EnumerateArray())
-        {
-            object? source = element.Deserialize(contract);
-
-            rows.Add(Shape<TOut>(source, shaper, compiled));
-        }
-
-        return rows;
-    }
-
     /// <summary>
-    /// Applies the projection: the generated shaper when there is one, the compiled lambda when
-    /// there is not, and neither when the chain had no <c>Select</c>.
+    /// The projection, as a function of one materialized row — or null when the chain had no
+    /// <c>Select</c> and the queried type is already the result.
     /// </summary>
-    private static TOut Shape<TOut>(object? source, Func<object?, object?>? shaper, Delegate? compiled)
+    /// <remarks>
+    /// A generated shaper when one was emitted for this projection, and otherwise the lambda,
+    /// compiled into an adapter that takes and returns <see cref="object"/>. The adapter is what
+    /// makes the difference: invoking the lambda's own delegate means
+    /// <see cref="Delegate.DynamicInvoke"/>, which builds an argument array and reflects over the
+    /// signature for every row.
+    /// </remarks>
+    public static Func<object?, object?>? Shaper(GraphQLQueryPlan plan)
     {
-        if (shaper is not null)
-            return (TOut)shaper(source)!;
+        if (plan.Projection is not { } projection)
+            return null;
 
-        // No Select: the queried type is the result type.
-        return compiled is null ? (TOut)source! : (TOut)compiled.DynamicInvoke(source)!;
+        return GraphQLProjectionRegistry.Find(projection) ?? Adapt(projection);
     }
 
-    /// <summary>Reads the <c>totalCount</c> the count translation asked for.</summary>
-    public static long Count(GraphQLQueryPlan plan, JsonElement data)
+    /// <summary>Compiles <c>TElement -&gt; TOut</c> into <c>object -&gt; object</c>.</summary>
+    private static Func<object?, object?> Adapt(LambdaExpression projection)
     {
-        var field = RootField(plan, data);
+        var source = Expression.Parameter(typeof(object), "source");
 
-        if (field.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
-            return 0;
+        var body = Expression.Convert(
+            Expression.Invoke(projection, Expression.Convert(source, projection.Parameters[0].Type)),
+            typeof(object));
 
-        if (!field.TryGetProperty("totalCount", out var total))
-            throw new GraphQLTranslationException("FGQL009",
-                $"'{plan.RootField}' returned no 'totalCount'. The server must expose it on the "
-                + "connection for Count() to work — HotChocolate needs IncludeTotalCount on the "
-                + "paging attribute.");
-
-        return total.GetInt64();
+        return Expression.Lambda<Func<object?, object?>>(body, source).Compile();
     }
 
     /// <summary>Reduces the rows the way the chain's terminal operator asks.</summary>
@@ -88,7 +53,7 @@ internal static class ResultMaterializer
     /// <c>First</c>, two for <c>Single</c> — so this is a reduction over a narrow page, not over
     /// a collection that was fetched whole and then thrown away.
     /// </remarks>
-    public static TOut Reduce<TOut>(GraphQLQueryPlan plan, List<TOut> rows)
+    public static TOut Reduce<TOut>(GraphQLQueryPlan plan, IReadOnlyList<TOut> rows)
     {
         switch (plan.ResultOperator)
         {
@@ -120,54 +85,4 @@ internal static class ResultMaterializer
                 throw GraphQLTranslationException.UnsupportedOperator(plan.ResultOperator.ToString());
         }
     }
-
-    /// <summary>True when the existence check's page came back with a row in it.</summary>
-    public static bool Any(GraphQLQueryPlan plan, JsonElement data)
-        => Elements(plan, data) is { ValueKind: JsonValueKind.Array } elements
-            && elements.GetArrayLength() > 0;
-
-    /// <summary>
-    /// Walks past the root field and the paging wrapper the translator emitted, to the array of
-    /// elements. A null root field reads as an empty result rather than as an error.
-    /// </summary>
-    private static JsonElement Elements(GraphQLQueryPlan plan, JsonElement data)
-    {
-        var field = RootField(plan, data);
-
-        if (field.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
-            return default;
-
-        string? wrapper = plan.Paging switch
-        {
-            PagingKind.Cursor => "nodes",
-            PagingKind.Offset => "items",
-            _ => null
-        };
-
-        if (wrapper is not null)
-        {
-            if (!field.TryGetProperty(wrapper, out var wrapped))
-                throw new GraphQLTranslationException("FGQL018",
-                    $"'{plan.RootField}' returned no '{wrapper}'. The declared PagingKind."
-                    + $"{plan.Paging} does not match how the server pages this field.");
-
-            field = wrapped;
-        }
-
-        if (field.ValueKind is JsonValueKind.Null)
-            return default;
-
-        if (field.ValueKind is not JsonValueKind.Array)
-            throw new GraphQLTranslationException("FGQL018",
-                $"'{plan.RootField}' returned {field.ValueKind}, not a list of elements.");
-
-        return field;
-    }
-
-    private static JsonElement RootField(GraphQLQueryPlan plan, JsonElement data)
-        => data.ValueKind is JsonValueKind.Object && data.TryGetProperty(plan.RootField, out var field)
-            ? field
-            : throw new GraphQLTranslationException("FGQL018",
-                $"The response has no '{plan.RootField}' field.");
-
 }

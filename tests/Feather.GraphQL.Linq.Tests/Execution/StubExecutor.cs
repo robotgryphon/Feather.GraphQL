@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Feather.GraphQL.Linq.Execution;
 using Feather.GraphQL.Linq.Filtering;
@@ -11,7 +12,7 @@ namespace Feather.GraphQL.Linq.Tests.Execution;
 /// </summary>
 internal sealed class StubExecutor : IGraphQLQueryExecutor
 {
-    private readonly JsonDocument _data;
+    private readonly byte[] _reply;
     private readonly Exception? _failure;
 
     public IFilterTranslationProvider FilterProvider => HotChocolateFilterProvider.Instance;
@@ -28,7 +29,9 @@ internal sealed class StubExecutor : IGraphQLQueryExecutor
 
     private StubExecutor(string dataJson, Exception? failure = null)
     {
-        _data = JsonDocument.Parse(dataJson);
+        // Wrapped in an envelope, because the transport seam now hands back a reply read whole
+        // rather than a data element picked out of one.
+        _reply = System.Text.Encoding.UTF8.GetBytes($$"""{"data":{{dataJson}}}""");
         _failure = failure;
     }
 
@@ -42,17 +45,45 @@ internal sealed class StubExecutor : IGraphQLQueryExecutor
     public IQueryable<T> Queryable<T>(string rootField, Action<GraphQLQueryOptions>? configure = null)
         => GraphQLQueryable.For<T>(this, rootField, configure);
 
-    public ValueTask<JsonElement> ExecuteAsync(
-        string query,
-        IReadOnlyDictionary<string, object?> variables,
+    public ValueTask<IReadOnlyList<TElement>> ExecuteAsync<TElement>(
+        GraphQLOperation operation,
         CancellationToken cancellationToken)
     {
-        _query = query;
-        _variables = variables;
+        Record(operation, cancellationToken);
+
+        return ValueTask.FromResult(GraphQLReplyReader.ReadRows<TElement>(_reply, operation));
+    }
+
+    public async IAsyncEnumerable<TElement> StreamAsync<TElement>(
+        GraphQLOperation operation,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        Record(operation, cancellationToken);
+
+        await foreach (var row in GraphQLReplyReader
+            .StreamRows<TElement>(_reply, operation, cancellationToken)
+            .ConfigureAwait(false))
+        {
+            yield return row;
+        }
+    }
+
+    public ValueTask<long> ExecuteCountAsync(
+        GraphQLOperation operation,
+        CancellationToken cancellationToken)
+    {
+        Record(operation, cancellationToken);
+
+        return ValueTask.FromResult(GraphQLReplyReader.ReadCount(_reply, operation));
+    }
+
+    private void Record(GraphQLOperation operation, CancellationToken cancellationToken)
+    {
+        _query = operation.Query;
+        _variables = operation.Variables;
         cancellationToken.ThrowIfCancellationRequested();
 
-        return _failure is not null
-            ? throw _failure
-            : ValueTask.FromResult(_data.RootElement);
+        if (_failure is not null)
+            throw _failure;
     }
 }

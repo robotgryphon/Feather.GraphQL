@@ -63,12 +63,6 @@ internal sealed class GraphQLQueryTranslator(GraphQLQueryOptions options)
 
         ApplyResultOperator(chain, options, rootField);
 
-        // A count asks for a single number, so "this would fetch every record" does not apply.
-        if (!chain.IsCount && !chain.HasFilter && !chain.HasPaging && chain.Projection is null)
-            throw new GraphQLTranslationException("FGQL012",
-                $"A query over '{chain.ElementType.Name}' with no Where, Take or Select would "
-                + "request every record. Add one of them.");
-
         if (chain.Skip.HasValue && options.Paging == PagingKind.Cursor)
             throw new GraphQLTranslationException("FGQL008",
                 $"'{rootField}' uses cursor paging, which has no offset to Skip to. Use Take with "

@@ -1,5 +1,4 @@
 using System.Runtime.CompilerServices;
-using System.Text.Json;
 using BenchmarkDotNet.Attributes;
 using Feather.GraphQL.Linq.Execution;
 using Feather.GraphQL.Linq.Filtering;
@@ -12,11 +11,15 @@ namespace Feather.GraphQL.Benchmarks;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The executor hands back an already-parsed <c>data</c> element, so no HTTP, no serialization
-/// of the request and no parsing of the reply is in the measurement. What remains is Feather's
-/// own work: walking the chain, printing the document, and turning JSON into objects. This is
-/// the tier to profile in, because a profile taken over <see cref="ClientComparison"/> is mostly
-/// <c>HttpClient</c>.
+/// The executor answers from a fixed byte array, so no HTTP and no serialization of the request
+/// is in the measurement. What remains is Feather's own work: walking the chain, printing the
+/// document, reading the reply and turning it into objects. This is the tier to profile in,
+/// because a profile taken over <see cref="ClientComparison"/> is mostly <c>HttpClient</c>.
+/// </para>
+/// <para>
+/// Reading the reply is in the number and cannot be taken out: the transport seam takes the
+/// contract to read a reply through rather than returning a parsed element, so reading is how
+/// the rows come to exist at all.
 /// </para>
 /// <para>
 /// The two benchmarks differ in one thing only. <c>Composed</c> builds its chain behind a helper,
@@ -35,7 +38,7 @@ public class QueryPipeline
     public int Rows { get; set; }
 
     [GlobalSetup]
-    public void Setup() => _executor = new CannedExecutor(Payloads.Data(Rows));
+    public void Setup() => _executor = new CannedExecutor(Payloads.Body(Rows));
 
     [Benchmark(Baseline = true, Description = "Composed at runtime")]
     public async Task<int> Composed()
@@ -68,18 +71,28 @@ public class QueryPipeline
     /// An executor that returns a fixed answer without doing any work for it.
     /// </summary>
     /// <remarks>
-    /// The <see cref="JsonElement"/> is parsed once in setup and handed back by reference, so
-    /// nothing in the measurement is attributable to the transport — including the JSON parse,
-    /// whose cost <c>TransportFloor.Parse</c> reports on its own.
+    /// The reply is deserialized through the contract it is handed, which is the one thing a
+    /// transport does that this benchmark cannot take out — it is where the rows come from. What
+    /// is excluded is the transport itself: no HTTP, no request serialization, and no buffering
+    /// of a response that is already a byte array.
     /// </remarks>
-    private sealed class CannedExecutor(JsonElement data) : IGraphQLQueryExecutor
+    private sealed class CannedExecutor(byte[] reply) : IGraphQLQueryExecutor
     {
         public IFilterTranslationProvider FilterProvider => HotChocolateFilterProvider.Instance;
 
-        public ValueTask<JsonElement> ExecuteAsync(
-            string query,
-            IReadOnlyDictionary<string, object?> variables,
+        public ValueTask<IReadOnlyList<TElement>> ExecuteAsync<TElement>(
+            GraphQLOperation operation,
             CancellationToken cancellationToken)
-            => new(data);
+            => new(GraphQLReplyReader.ReadRows<TElement>(reply, operation));
+
+        public IAsyncEnumerable<TElement> StreamAsync<TElement>(
+            GraphQLOperation operation,
+            CancellationToken cancellationToken)
+            => GraphQLReplyReader.StreamRows<TElement>(reply, operation, cancellationToken);
+
+        public ValueTask<long> ExecuteCountAsync(
+            GraphQLOperation operation,
+            CancellationToken cancellationToken)
+            => new(GraphQLReplyReader.ReadCount(reply, operation));
     }
 }

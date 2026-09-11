@@ -8,11 +8,6 @@ public class QueryRejectionTests
     private static string ThrowsWith(TestDelegate action)
         => Assert.Throws<GraphQLTranslationException>(action)!.DiagnosticId;
 
-    [Test]
-    public void Unbounded_query_is_FGQL012()
-        => Assert.That(ThrowsWith(() => Schema.People.ToGraphQLQuery()),
-            Is.EqualTo("FGQL012"));
-
     /// <summary>
     /// A queryable from elsewhere carries no schema, so translating one without saying how it is
     /// queried has nothing to ask for.

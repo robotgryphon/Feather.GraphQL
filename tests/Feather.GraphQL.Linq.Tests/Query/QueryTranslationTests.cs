@@ -28,6 +28,16 @@ public class QueryTranslationTests
         });
     }
 
+    /// <summary>
+    /// A chain with no Where, Take or Select asks for the whole collection, which the translator
+    /// used to refuse outright. It is a warning at the call site now — sometimes the top-level
+    /// fields are exactly what is wanted — so what it translates to is worth stating.
+    /// </summary>
+    [Test]
+    public void An_unbounded_query_selects_the_type_s_own_scalars()
+        => Assert.That(Schema.People.ToQueryPlan().Query,
+            Is.EqualTo("query { people { name age emailAddress } }"));
+
     [Test]
     public void JsonIgnore_members_are_not_selected()
         => Assert.That(Schema.People.Where(p => p.Age > 1).ToQueryPlan().Query,

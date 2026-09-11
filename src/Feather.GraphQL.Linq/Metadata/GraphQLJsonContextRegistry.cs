@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
+using Feather.GraphQL.Linq.Execution;
 using JetBrains.Annotations;
 
 namespace Feather.GraphQL.Linq.Metadata;
@@ -31,6 +32,7 @@ public static class GraphQLJsonContextRegistry
     private static readonly Lock _gate = new();
     private static JsonSerializerOptions? _options;
 
+
     /// <summary>Adds a context's contracts to the ones results are materialized through.</summary>
     public static void Register(IJsonTypeInfoResolver resolver)
     {
@@ -42,17 +44,32 @@ public static class GraphQLJsonContextRegistry
 
             // Options are immutable once used, so a late registration gets a fresh set rather
             // than being silently ignored.
-            _options = null;
+            Volatile.Write(ref _options, null);
         }
     }
 
     /// <summary>The options results are read with. Public so a test can ask where a contract came from.</summary>
+    /// <remarks>
+    /// Read without taking the lock once there is something to read. This sits on the per-query
+    /// path, and a lock there would be paid by every request to guard a field that is written
+    /// once at startup in every program that is not still registering contexts.
+    /// </remarks>
     public static JsonSerializerOptions Options
     {
         get
         {
+            var current = Volatile.Read(ref _options);
+
+            if (current is not null)
+                return current;
+
             lock (_gate)
-                return _options ??= Build();
+            {
+                current = _options ??= Build();
+                Volatile.Write(ref _options, current);
+
+                return current;
+            }
         }
     }
 
@@ -62,6 +79,7 @@ public static class GraphQLJsonContextRegistry
     /// </summary>
     internal static JsonTypeInfo TypeInfo(Type type) => Options.GetTypeInfo(type);
 
+
     private static JsonSerializerOptions Build()
     {
         // Registered contexts first, reflection last: a generated contract wins, and a type no
@@ -70,12 +88,18 @@ public static class GraphQLJsonContextRegistry
         chain.AddRange(_resolvers);
         chain.Add(new DefaultJsonTypeInfoResolver());
 
-        return new JsonSerializerOptions
+        var options = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             PropertyNameCaseInsensitive = true,
             TypeInfoResolver = JsonTypeInfoResolver.Combine([.. chain]).WithAddedModifier(NothingIsRequired)
         };
+
+        // How a reply is read at all: the root field's name is a runtime value, so no declared
+        // type can name it and a converter has to go looking.
+        options.Converters.Add(new ParsedReplyConverterFactory());
+
+        return options;
     }
 
     /// <summary>
