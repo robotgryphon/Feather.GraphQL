@@ -1,5 +1,5 @@
 using System.Text.Json.Serialization.Metadata;
-using Feather.GraphQL.Linq.Metadata;
+using Feather.GraphQL.Metadata;
 using Feather.GraphQL.Linq.Tests.Execution;
 using Feather.GraphQL.Linq.Tests.Query;
 

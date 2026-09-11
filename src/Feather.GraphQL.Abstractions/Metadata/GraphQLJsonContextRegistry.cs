@@ -1,10 +1,9 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
-using Feather.GraphQL.Linq.Execution;
 using JetBrains.Annotations;
 
-namespace Feather.GraphQL.Linq.Metadata;
+namespace Feather.GraphQL.Metadata;
 
 /// <summary>
 /// Where a source-generated <see cref="JsonSerializerContext"/> registers itself, so results can
@@ -24,14 +23,41 @@ namespace Feather.GraphQL.Linq.Metadata;
 /// <see cref="JsonSerializerContext"/> in a compilation and registers it from a module
 /// initializer.
 /// </para>
+/// <para>
+/// It lives here, below both halves of the library, because reading a reply is not a LINQ
+/// concern. The transport reads one whether a query was composed or written out by hand, and
+/// both should read it through the same contracts — otherwise the hand-written half quietly
+/// reflects while the composed half does not, which is a difference nobody asked for and
+/// nothing in the source would explain.
+/// </para>
 /// </remarks>
 [PublicAPI]
 public static class GraphQLJsonContextRegistry
 {
     private static readonly List<IJsonTypeInfoResolver> _resolvers = [];
+    private static readonly List<JsonConverter> _converters = [];
     private static readonly Lock _gate = new();
     private static JsonSerializerOptions? _options;
 
+
+    /// <summary>
+    /// Adds a converter to the ones replies are read with.
+    /// </summary>
+    /// <remarks>
+    /// How the LINQ half teaches this registry to read a reply whose root field is named at
+    /// runtime. Kept as a registration rather than a reference so that the dependency points the
+    /// way it already did: this assembly knows nothing about queries.
+    /// </remarks>
+    public static void Register(JsonConverter converter)
+    {
+        ArgumentNullException.ThrowIfNull(converter);
+
+        lock (_gate)
+        {
+            _converters.Add(converter);
+            _options = null;
+        }
+    }
 
     /// <summary>Adds a context's contracts to the ones results are materialized through.</summary>
     public static void Register(IJsonTypeInfoResolver resolver)
@@ -77,7 +103,7 @@ public static class GraphQLJsonContextRegistry
     /// The contract for one type — generated when a registered context covers it, reflected when
     /// none does.
     /// </summary>
-    internal static JsonTypeInfo TypeInfo(Type type) => Options.GetTypeInfo(type);
+    public static JsonTypeInfo TypeInfo(Type type) => Options.GetTypeInfo(type);
 
 
     private static JsonSerializerOptions Build()
@@ -95,9 +121,8 @@ public static class GraphQLJsonContextRegistry
             TypeInfoResolver = JsonTypeInfoResolver.Combine([.. chain]).WithAddedModifier(NothingIsRequired)
         };
 
-        // How a reply is read at all: the root field's name is a runtime value, so no declared
-        // type can name it and a converter has to go looking.
-        options.Converters.Add(new ParsedReplyConverterFactory());
+        foreach (var converter in _converters)
+            options.Converters.Add(converter);
 
         return options;
     }

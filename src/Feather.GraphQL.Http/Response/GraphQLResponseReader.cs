@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
+using Feather.GraphQL.Metadata;
 using Feather.GraphQL.Primitives;
 
 namespace Feather.GraphQL.Http.Response;
@@ -55,8 +57,7 @@ internal static class GraphQLResponseReader
             // the serializer takes a single-buffer path that a Utf8JsonReader — which must allow
             // for more segments to come — cannot, and which is worth about a third of the time
             // spent here on a large reply.
-            return JsonSerializer.Deserialize<GraphQLReply<TData>>(body.Span, JsonSerializerOptions.Web)
-                ?? new GraphQLReply<TData>();
+            return JsonSerializer.Deserialize(body.Span, Contract<TData>.Current) ?? new GraphQLReply<TData>();
         }
         catch (JsonException) when (Errors(body) is { Length: > 0 } errors)
         {
@@ -65,6 +66,45 @@ internal static class GraphQLResponseReader
             // sent them after data: errors sent first are read before the payload is, and the
             // payload never throws in isolation once it has been read.
             return new GraphQLReply<TData> { Errors = errors };
+        }
+    }
+
+    /// <summary>
+    /// The contract one payload type's replies are read through, resolved once.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Read through <see cref="GraphQLJsonContextRegistry"/>, which is where a source-generated
+    /// <c>JsonSerializerContext</c> registers itself. Deserializing with plain reflection instead
+    /// — which this used to do — meant a caller who had done the work to declare contracts got
+    /// them used for a composed query and ignored for a hand-written one, and meant this path
+    /// could not run under NativeAOT at all.
+    /// </para>
+    /// <para>
+    /// Resolving the contract from the options on every reply is not free, and this is the
+    /// per-request path. Keyed on the options instance so that a late registration, which
+    /// replaces them, is picked up rather than ignored; the pair is one field so a racing reader
+    /// sees both or neither, and two threads resolving the same contract is harmless.
+    /// </para>
+    /// </remarks>
+    private static class Contract<TData>
+    {
+        private static (JsonSerializerOptions Options, JsonTypeInfo<GraphQLReply<TData>> Info)? _current;
+
+        public static JsonTypeInfo<GraphQLReply<TData>> Current
+        {
+            get
+            {
+                var options = GraphQLJsonContextRegistry.Options;
+
+                if (_current is { } cached && ReferenceEquals(cached.Options, options))
+                    return cached.Info;
+
+                var info = (JsonTypeInfo<GraphQLReply<TData>>)options.GetTypeInfo(typeof(GraphQLReply<TData>));
+                _current = (options, info);
+
+                return info;
+            }
         }
     }
 
@@ -108,7 +148,7 @@ internal static class GraphQLResponseReader
                     continue;
                 }
 
-                return JsonSerializer.Deserialize<GraphQLError[]>(ref reader, JsonSerializerOptions.Web);
+                return JsonSerializer.Deserialize<GraphQLError[]>(ref reader, GraphQLJsonContextRegistry.Options);
             }
         }
         catch (JsonException)

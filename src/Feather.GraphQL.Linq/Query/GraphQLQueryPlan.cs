@@ -33,4 +33,16 @@ internal sealed record GraphQLQueryPlan(
     string RootField,
     PagingKind Paging,
     LambdaExpression? Projection,
-    QueryResultOperator ResultOperator);
+    QueryResultOperator ResultOperator)
+{
+    /// <summary>
+    /// The payload of a chain that bound no arguments, which is most of them.
+    /// </summary>
+    /// <remarks>
+    /// Shared rather than allocated per query. A payload is read and never written — the
+    /// transport serializes it and the plan is discarded — so one empty dictionary answers every
+    /// query that has nothing to say.
+    /// </remarks>
+    public static readonly IReadOnlyDictionary<string, object?> NoVariables =
+        new Dictionary<string, object?>(0, StringComparer.Ordinal);
+}

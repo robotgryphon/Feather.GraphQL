@@ -8,11 +8,6 @@ namespace Feather.GraphQL.Http;
 
 public static class HttpExtensions
 {
-    private static readonly JsonSerializerOptions SERIALIZER_OPTS = new JsonSerializerOptions()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true
-    };
-
     /// <summary>
     /// The request headers, rendered once.
     /// </summary>
@@ -37,7 +32,7 @@ public static class HttpExtensions
         return $"{assembly.Name}/{assembly.Version}";
     }
 
-    extension<T>(T request)
+    extension(GraphQLRequest request)
     {
         private HttpRequestMessage AsHttpPost()
         {
@@ -50,13 +45,12 @@ public static class HttpExtensions
         /// The request body, as the UTF-8 bytes that go on the wire.
         /// </summary>
         /// <remarks>
-        /// Serialized straight to UTF-8 rather than to a string that <see cref="StringContent"/>
-        /// would then re-encode. The content type is written unparsed and without a charset, as
-        /// it was before: <c>application/json</c> is what some GraphQL servers insist on seeing.
+        /// The content type is written unparsed and without a charset: <c>application/json</c> is
+        /// what some GraphQL servers insist on seeing.
         /// </remarks>
         private ByteArrayContent AsHttpMessageContent()
         {
-            var content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(request, SERIALIZER_OPTS));
+            var content = new ByteArrayContent(GraphQLRequestWriter.ToUtf8(request));
 
             content.Headers.TryAddWithoutValidation("Content-Type", JSON_CONTENT_TYPE);
 

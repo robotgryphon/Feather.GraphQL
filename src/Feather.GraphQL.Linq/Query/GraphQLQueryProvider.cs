@@ -119,8 +119,20 @@ internal sealed class GraphQLQueryProvider(IGraphQLQueryExecutor? executor, Grap
     /// </remarks>
     public string? PrecompiledDocument { get; set; }
 
+    /// <summary>
+    /// The whole plan, when the compiler could produce one.
+    /// </summary>
+    /// <remarks>
+    /// Only for a chain that binds nothing: everything in a plan but the variables is a fact
+    /// about the chain's shape, and a chain whose shape is fully known needs no walking. Held on
+    /// the provider for the same reason the document is — a provider is created once per chain,
+    /// which is exactly the scope a precompiled anything is valid for.
+    /// </remarks>
+    public GraphQLQueryPlan? PrecompiledPlan { get; set; }
+
     private GraphQLQueryPlan Plan(Expression expression)
-        => new GraphQLQueryTranslator(Options).Translate(expression, PrecompiledDocument);
+        => PrecompiledPlan
+            ?? new GraphQLQueryTranslator(Options).Translate(expression, PrecompiledDocument);
 
     private IGraphQLQueryExecutor Executor
         => executor ?? throw new GraphQLTranslationException("FGQL016",

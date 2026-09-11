@@ -21,10 +21,6 @@ internal static class QueryDocumentWriter
         if (!ApplyResult(facts))
             return null;
 
-        // The runtime refuses a query that would fetch everything; there is nothing to print.
-        if (!facts.IsCount && !facts.HasFilter && !facts.HasPaging && facts.Projection is null)
-            return null;
-
         // Cursor paging has no offset to skip to — FGQL008.
         if (facts.HasSkip && facts.Paging == Paging.Cursor)
             return null;

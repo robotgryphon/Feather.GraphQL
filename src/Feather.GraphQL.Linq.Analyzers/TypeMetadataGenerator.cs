@@ -262,7 +262,7 @@ public sealed class TypeMetadataGenerator : IIncrementalGenerator
 
         foreach (string name in jsonContexts)
         {
-            source.Append("            global::Feather.GraphQL.Linq.Metadata.GraphQLJsonContextRegistry.Register(")
+            source.Append("            global::Feather.GraphQL.Metadata.GraphQLJsonContextRegistry.Register(")
                 .Append(name).AppendLine(".Default);");
         }
 

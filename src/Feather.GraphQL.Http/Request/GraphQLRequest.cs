@@ -4,122 +4,31 @@ namespace Feather.GraphQL.Http.Request;
 
 /// <summary>
 /// The GraphQL over HTTP request body: the query text plus its variables, operation name and
-/// extensions, serialized as the POST payload.
+/// extensions.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Deliberately not part of the public API. Callers reach a server one of two ways — compose a
 /// chain with the LINQ integration, or hand <c>SendGraphQLQueryAsync</c> a precompiled query
-/// string — and this type is the wire shape both of those funnel into.
+/// string — and this is the wire shape both funnel into.
+/// </para>
+/// <para>
+/// A plain record, and it used to be a <see cref="Dictionary{TKey,TValue}"/> subclass. That
+/// shape cost about 76 ns and 384 bytes on every request: serializing it meant walking a
+/// dictionary of <see cref="object"/> through the serializer's polymorphic path, resolving a
+/// contract for each value's runtime type, and writing three members that were almost always
+/// null. It also let a request carry members GraphQL has no meaning for, which nothing wanted.
+/// </para>
 /// </remarks>
-internal class GraphQLRequest : Dictionary<string, object>, IEquatable<GraphQLRequest?>
-{
-    public const string OPERATION_NAME_KEY = "operationName";
-    public const string QUERY_KEY = "query";
-    public const string VARIABLES_KEY = "variables";
-    public const string EXTENSIONS_KEY = "extensions";
-
-    /// <summary>
-    /// The query string
-    /// </summary>
-    [StringSyntax("GraphQL")]
-    public string? Query
-    {
-        get => TryGetValue(QUERY_KEY, out object? value) ? (string)value : null;
-        set
-        {
-            if (value is null) return;
-            this[QUERY_KEY] = value;
-        }
-    }
-
-    /// <summary>
-    /// The operation to execute
-    /// </summary>
-    public string? OperationName
-    {
-        get => TryGetValue(OPERATION_NAME_KEY, out object? value) ? (string)value : null;
-        set => this[OPERATION_NAME_KEY] = value!;
-    }
-
-    /// <summary>
-    /// Represents the request variables
-    /// </summary>
-    public object? Variables
-    {
-        get => TryGetValue(VARIABLES_KEY, out object? value) ? value : null;
-        set => this[VARIABLES_KEY] = value!;
-    }
-
-    /// <summary>
-    /// Represents the request extensions
-    /// </summary>
-    public Dictionary<string, object?>? Extensions
-    {
-        get => TryGetValue(EXTENSIONS_KEY, out object? value) && value is Dictionary<string, object?> d ? d : null;
-        set => this[EXTENSIONS_KEY] = value!;
-    }
-
-    public GraphQLRequest() { }
-
-    public GraphQLRequest([StringSyntax("GraphQL")] string query, object? variables = null,
-            string? operationName = null,
-            Dictionary<string, object?>? extensions = null)
-    {
-        Query = query;
-        Variables = variables;
-        OperationName = operationName;
-        Extensions = extensions;
-    }
-
-    /// <summary>
-    /// Returns a value that indicates whether this instance is equal to a specified object
-    /// </summary>
-    /// <param name="obj">The object to compare with this instance</param>
-    /// <returns>true if obj is an instance of <see cref="GraphQLRequest"/> and equals the value of the instance; otherwise, false</returns>
-    public override bool Equals(object? obj)
-    {
-        if (obj is null)
-            return false;
-        if (ReferenceEquals(this, obj))
-            return true;
-        if (obj.GetType() != GetType())
-            return false;
-        return Equals((GraphQLRequest)obj);
-    }
-
-    /// <summary>
-    /// Returns a value that indicates whether this instance is equal to a specified object
-    /// </summary>
-    /// <param name="other">The object to compare with this instance</param>
-    /// <returns>true if obj is an instance of <see cref="GraphQLRequest"/> and equals the value of the instance; otherwise, false</returns>
-    public virtual bool Equals(GraphQLRequest? other)
-    {
-        if (other is null)
-            return false;
-        if (ReferenceEquals(this, other))
-            return true;
-        return Count == other.Count && !this.Except(other).Any();
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="object.GetHashCode"/>
-    /// </summary>
-    public override int GetHashCode() => (Query, OperationName, Variables, Extensions).GetHashCode();
-
-    /// <summary>
-    /// Tests whether two specified <see cref="GraphQLRequest"/> instances are equivalent
-    /// </summary>
-    /// <param name="left">The <see cref="GraphQLRequest"/> instance that is to the left of the equality operator</param>
-    /// <param name="right">The <see cref="GraphQLRequest"/> instance that is to the right of the equality operator</param>
-    /// <returns>true if left and right are equal; otherwise, false</returns>
-    public static bool operator ==(GraphQLRequest? left, GraphQLRequest? right) =>
-            EqualityComparer<GraphQLRequest?>.Default.Equals(left, right);
-
-    /// <summary>
-    /// Tests whether two specified <see cref="GraphQLRequest"/> instances are not equal
-    /// </summary>
-    /// <param name="left">The <see cref="GraphQLRequest"/> instance that is to the left of the not equal operator</param>
-    /// <param name="right">The <see cref="GraphQLRequest"/> instance that is to the right of the not equal operator</param>
-    /// <returns>true if left and right are unequal; otherwise, false</returns>
-    public static bool operator !=(GraphQLRequest? left, GraphQLRequest? right) => !(left == right);
-}
+/// <param name="Query">The query text. Required; everything else is optional.</param>
+/// <param name="Variables">
+/// The values the document's variables take. The LINQ integration builds these as
+/// <c>JsonNode</c>s, which <see cref="GraphQLRequestWriter"/> writes without a serializer.
+/// </param>
+/// <param name="OperationName">Which operation to run, for a document declaring more than one.</param>
+/// <param name="Extensions">Anything a server understands beyond the specification.</param>
+internal sealed record GraphQLRequest(
+    [property: StringSyntax("GraphQL")] string Query,
+    IReadOnlyDictionary<string, object?>? Variables = null,
+    string? OperationName = null,
+    IReadOnlyDictionary<string, object?>? Extensions = null);

@@ -6,11 +6,10 @@ namespace Feather.GraphQL.Linq.Execution;
 /// </summary>
 /// <remarks>
 /// <para>
-/// It says which of the two happened and nothing else, because nothing else is knowable here.
-/// Reading an error means naming the type an error is, and <c>Feather.GraphQL.Linq</c> does not
-/// reference the assembly that defines one — deliberately, so the LINQ surface stays free of any
-/// transport. The transport catches this and raises its own, with the errors read through its
-/// own types.
+/// It says which of the two happened and nothing else. What a failed query should throw is the
+/// transport's to decide, because the transport owns the exception that carries the response
+/// alongside the errors — and a reader that threw one of its own would leave the caller holding
+/// something with no way back to the body that explains it.
 /// </para>
 /// <para>
 /// A failed reply is genuinely exceptional, so it travels as an exception rather than as a

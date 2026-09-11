@@ -227,6 +227,9 @@ internal sealed class GraphQLQueryTranslator(GraphQLQueryOptions options)
 
     private static IReadOnlyDictionary<string, object?> BuildVariables(IReadOnlyList<GqlVariableDefinition> variables)
     {
+        if (variables.Count == 0)
+            return GraphQLQueryPlan.NoVariables;
+
         var payload = new Dictionary<string, object?>(variables.Count, StringComparer.Ordinal);
         foreach (var variable in variables)
             payload[variable.Name] = variable.Value;

@@ -1,6 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Feather.GraphQL.Linq.Metadata;
+using Feather.GraphQL.Metadata;
 
 namespace Feather.GraphQL.Linq.Execution;
 

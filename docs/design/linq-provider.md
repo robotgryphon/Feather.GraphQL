@@ -798,6 +798,19 @@ Two details inside the reader matter more than they look:
   element type to be deserialized in one pass, and the element type is not known until
   there is a plan. It also cannot name the root field, whose name is a runtime value.
 
+**One registry, both halves.** `GraphQLJsonContextRegistry` — where a source-generated
+`JsonSerializerContext` registers itself — lives in `Feather.GraphQL.Abstractions`, below
+both halves of the library. It has to: the raw `ReadGraphQLAsync` path reads replies too, and
+it used to read them with plain reflection. That meant a caller who had done the work to
+declare contracts got them used for a composed query and ignored for a hand-written one, and
+that the raw path could not run under NativeAOT at all. Both now read through the registry,
+which is also why `required` is relaxed on both: a GraphQL query selects a subset of a type's
+fields, and the ones it did not ask for come back unset.
+
+The registry knows nothing about queries, so the converter that reads a reply into rows is
+*registered* with it from a module initializer in `Feather.GraphQL.Linq` rather than
+referenced by it. That is the one direction the knowledge travels.
+
 **Three methods, because there are three questions.** `ExecuteAsync` reads every row.
 `ExecuteCountAsync` reads a `totalCount` — its own method because a count query selects a
 number and no rows, so there is no element type for one to be read as, and smuggling it
@@ -835,11 +848,18 @@ otherwise all in the other direction.
 
 **Errors stay the transport's.** The reader reports only *that* a reply failed, as a
 `GraphQLReplyFailedException` saying which of the two ways it did — errors, or no data at
-all. `Feather.GraphQL.Linq` does not reference the assembly a `GraphQLError` is defined in,
-deliberately, so the LINQ surface stays free of any transport. The transport catches that
-and raises its own, reading the errors through its own types. It costs a second pass over a
-reply whose payload was never deserialized: rows are skipped once errors are known, and
-servers conventionally send errors first.
+all. What a failed query throws is the transport's to decide, because the transport owns
+the exception that carries the response alongside the errors, and a reader that threw one of
+its own would leave the caller holding something with no way back to the body that explains
+it. The transport catches the signal and raises its own, reading the errors through its own
+types. That costs a second pass over a reply whose payload was never deserialized: rows are
+skipped once errors are known, and servers conventionally send errors first.
+
+`Feather.GraphQL.Linq` does reference `Feather.GraphQL.Abstractions`, for the contract
+registry described below — so keeping errors on the transport's side is now a choice rather
+than something the compiler enforces. The choice is still the right one, and the reference
+exists for a reason worth more than the enforcement: a reply should be read through the same
+contracts whether its query was composed or written out by hand.
 
 ```
 client.CreateQueryable<T>(root) … .ToListAsync(ct)

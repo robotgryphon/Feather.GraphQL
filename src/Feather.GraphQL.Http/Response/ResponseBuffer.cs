@@ -19,12 +19,25 @@ namespace Feather.GraphQL.Http.Response;
 /// bytes into a document of its own.
 /// </para>
 /// </remarks>
-internal readonly struct ResponseBuffer(byte[] buffer, int length) : IDisposable
+internal readonly struct ResponseBuffer : IDisposable
 {
-    /// <summary>The bytes that were read.</summary>
-    public ReadOnlyMemory<byte> Bytes { get; } = buffer.AsMemory(0, length);
+    private readonly byte[]? _rented;
 
-    public void Dispose() => ArrayPool<byte>.Shared.Return(buffer);
+    private ResponseBuffer(ReadOnlyMemory<byte> bytes, byte[]? rented)
+    {
+        Bytes = bytes;
+        _rented = rented;
+    }
+
+    /// <summary>The bytes that were read.</summary>
+    public ReadOnlyMemory<byte> Bytes { get; }
+
+    /// <summary>Returns the rental, if this was one. Borrowed bytes are nobody's to free.</summary>
+    public void Dispose()
+    {
+        if (_rented is not null)
+            ArrayPool<byte>.Shared.Return(_rented);
+    }
 
     /// <summary>Reads a response's content into a pooled buffer.</summary>
     /// <remarks>
@@ -37,6 +50,12 @@ internal readonly struct ResponseBuffer(byte[] buffer, int length) : IDisposable
         CancellationToken cancellationToken)
     {
         var stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+
+        // Already an array behind the stream: borrow it rather than copying it. Content that
+        // arrived over a socket is not, so this is the in-memory case — a test double, or a
+        // caller who asked HttpClient to buffer the reply before handing it over.
+        if (stream is MemoryStream buffered && buffered.TryGetBuffer(out var segment))
+            return new ResponseBuffer(segment.AsMemory(), rented: null);
 
         byte[] buffer = ArrayPool<byte>.Shared.Rent(
             content.Headers.ContentLength is > 0 and <= int.MaxValue and var declared
@@ -60,7 +79,7 @@ internal readonly struct ResponseBuffer(byte[] buffer, int length) : IDisposable
                 .ConfigureAwait(false);
 
             if (read == 0)
-                return new ResponseBuffer(buffer, written);
+                return new ResponseBuffer(buffer.AsMemory(0, written), buffer);
 
             written += read;
         }

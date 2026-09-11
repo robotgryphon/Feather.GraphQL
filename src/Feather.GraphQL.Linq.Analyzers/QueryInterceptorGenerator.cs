@@ -44,7 +44,19 @@ public sealed class QueryInterceptorGenerator : IIncrementalGenerator
         string Parameters,
         string Using,
         string Forward,
-        string Document);
+        string Document,
+        StaticPlan? Plan);
+
+    /// <summary>
+    /// The rest of a plan, for a chain that binds nothing at runtime.
+    /// </summary>
+    /// <remarks>
+    /// A document is only half of what executing a chain needs; the other half is the root field,
+    /// how it pages and which terminal reduced it. Those are as knowable at compile time as the
+    /// document is — but only when the chain binds no values, because a bound value lives in the
+    /// expression tree and reading it is the whole reason the tree is walked at all.
+    /// </remarks>
+    private sealed record StaticPlan(string RootField, int Paging, int ResultOperator);
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
@@ -98,14 +110,54 @@ public sealed class QueryInterceptorGenerator : IIncrementalGenerator
         if (location is null)
             return null;
 
-        return Signature(method, location.GetInterceptsLocationAttributeSyntax(), document);
+        return Signature(method, location.GetInterceptsLocationAttributeSyntax(), document, Plan(completions));
     }
 
     /// <summary>
     /// Builds the interceptor's signature from the entry point's own, which is the only way it
     /// will match: an interceptor has to look exactly like what it replaces.
     /// </summary>
-    private static Interception? Signature(IMethodSymbol method, string attribute, string document)
+    /// <summary>
+    /// The whole plan for this chain, when every use of it can be described without running it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every use has to agree, for the reason the document does: one provider serves them all.
+    /// A chain that binds anything — a predicate, an ordering, a page, or a terminal that asks
+    /// the server for one row — is excluded, because the values it binds are only in the
+    /// expression tree. So is a projection, whose lambda the materializer still needs.
+    /// </para>
+    /// <para>
+    /// The enums are passed as their numbers. Both are mirrored between this assembly and the
+    /// runtime's, and a test asserts they still line up — a reordering would otherwise turn every
+    /// precompiled plan quietly wrong.
+    /// </para>
+    /// </remarks>
+    private static StaticPlan? Plan(IReadOnlyList<ChainFacts> completions)
+    {
+        StaticPlan? agreed = null;
+
+        foreach (var facts in completions)
+        {
+            if (facts.HasFilter || facts.HasOrdering || facts.HasPaging || facts.Projection is not null)
+                return null;
+
+            var plan = new StaticPlan(facts.RootField, (int)facts.Paging, (int)facts.Result);
+
+            if (agreed is not null && agreed != plan)
+                return null;
+
+            agreed = plan;
+        }
+
+        return agreed;
+    }
+
+    private static Interception? Signature(
+        IMethodSymbol method,
+        string attribute,
+        string document,
+        StaticPlan? plan)
     {
         var definition = method.OriginalDefinition;
 
@@ -165,7 +217,7 @@ public sealed class QueryInterceptorGenerator : IIncrementalGenerator
             : "";
 
         return new Interception(attribute, typeParameter, Constraints(definition.TypeParameters[0]),
-            string.Join(", ", parameters), @using, forward, document);
+            string.Join(", ", parameters), @using, forward, document, plan);
     }
 
     /// <summary>
@@ -255,9 +307,19 @@ public sealed class QueryInterceptorGenerator : IIncrementalGenerator
                 .Append(interception.TypeParameter).Append("> Query").Append(index++)
                 .Append('<').Append(interception.TypeParameter).Append(">(")
                 .Append(interception.Parameters).Append(')').Append(interception.Constraints).Append('\n')
-                .Append("            => global::Feather.GraphQL.Linq.Query.GraphQLPrecompiled.Attach(\n")
+                .Append("            => global::Feather.GraphQL.Linq.Query.GraphQLPrecompiled.")
+                .Append(interception.Plan is null ? "Attach(\n" : "AttachPlan(\n")
                 .Append("                ").Append(interception.Forward).Append(",\n")
-                .Append("                ").Append(Literal(interception.Document)).Append(");\n\n");
+                .Append("                ").Append(Literal(interception.Document));
+
+            if (interception.Plan is { } plan)
+            {
+                builder.Append(",\n                ").Append(Literal(plan.RootField))
+                    .Append(", ").Append(plan.Paging)
+                    .Append(", ").Append(plan.ResultOperator);
+            }
+
+            builder.Append(");\n\n");
         }
 
         builder.Append("    }\n}\n");

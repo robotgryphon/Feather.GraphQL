@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using JetBrains.Annotations;
 
+using Feather.GraphQL.Linq.Expressions;
+
 namespace Feather.GraphQL.Linq.Query;
 
 /// <summary>
@@ -52,6 +54,53 @@ public static class GraphQLPrecompiled
         if (source.Provider is GraphQLQueryProvider provider)
         {
             provider.PrecompiledDocument = document;
+            Interlocked.Increment(ref _attached);
+        }
+
+        return source;
+    }
+
+    /// <summary>
+    /// Hands a chain its whole plan, for a chain that binds nothing at runtime.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A document alone still leaves the chain to be walked on every execution, to find the
+    /// element type, the root field, the paging kind and the terminal operator. None of those
+    /// depend on a value, so for a chain that binds none the walk produces a constant — and the
+    /// compiler can produce it instead.
+    /// </para>
+    /// <para>
+    /// The numbers are <c>PagingKind</c> and the internal result operator. The generator mirrors
+    /// both and a test asserts the two still agree, because a reordering would make every
+    /// precompiled plan quietly wrong rather than loudly broken.
+    /// </para>
+    /// </remarks>
+    /// <param name="source">The queryable the chain starts at.</param>
+    /// <param name="document">The printed document. It binds no variables.</param>
+    /// <param name="rootField">The field the query reads from.</param>
+    /// <param name="paging">The <c>PagingKind</c> the root field was declared with.</param>
+    /// <param name="resultOperator">The terminal that reduces the sequence.</param>
+    public static IQueryable<T> AttachPlan<T>(
+        IQueryable<T> source,
+        string document,
+        string rootField,
+        int paging,
+        int resultOperator)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+
+        if (source.Provider is GraphQLQueryProvider provider)
+        {
+            provider.PrecompiledPlan = new GraphQLQueryPlan(
+                document,
+                GraphQLQueryPlan.NoVariables,
+                typeof(T),
+                rootField,
+                (PagingKind)paging,
+                Projection: null,
+                (QueryResultOperator)resultOperator);
+
             Interlocked.Increment(ref _attached);
         }
 

@@ -79,6 +79,48 @@ public class HttpExecutorTests
     }
 
     /// <summary>
+    /// The body is written member by member rather than serialized from a dictionary, so what it
+    /// comes out as is worth pinning exactly.
+    /// </summary>
+    /// <remarks>
+    /// Members carrying nothing are left out. The previous shape sent
+    /// <c>"variables":null,"operationName":null,"extensions":null</c> on every request, which is
+    /// legal but is three members a server has to parse and one — a present <c>operationName</c>
+    /// of null — that a strict server can reasonably object to.
+    /// </remarks>
+    [Test]
+    public async Task A_query_with_no_variables_posts_only_the_query()
+    {
+        var handler = new StubHandler("""{"data":{"people":[]}}""");
+
+        await handler.Client().SendGraphQLQueryAsync("{ people { name } }");
+
+        Assert.That(handler.SentBody, Is.EqualTo("""{"query":"{ people { name } }"}"""));
+    }
+
+    [Test]
+    public void A_query_with_variables_posts_them_under_variables()
+    {
+        var handler = new StubHandler("""{"data":{"people":[]}}""");
+
+        Query(handler).Where(p => p.Age > 30).ToArray();
+
+        Assert.That(handler.SentBody, Does.Contain("""{"v0":{"age":{"gt":30}}}"""));
+    }
+
+    /// <summary>A query is written as a JSON string, so its quotes have to survive the trip.</summary>
+    [Test]
+    public async Task A_query_containing_quotes_is_escaped()
+    {
+        var handler = new StubHandler("""{"data":{"people":[]}}""");
+
+        await handler.Client().SendGraphQLQueryAsync("""{ people(name: "Ada") { name } }""");
+
+        Assert.That(handler.SentBody,
+            Is.EqualTo("""{"query":"{ people(name: \u0022Ada\u0022) { name } }"}"""));
+    }
+
+    /// <summary>
     /// The request headers are rendered once and reused, so what they render to is worth
     /// pinning: nothing else in the suite would notice if a cached value came out wrong.
     /// </summary>
@@ -147,6 +189,26 @@ public class HttpExecutorTests
         var response = Reply("""{"data":"not an object"}""");
 
         Assert.ThrowsAsync<JsonException>(async () => await response.ReadGraphQLAsync<PeopleData>());
+    }
+
+    /// <summary>
+    /// The typed read goes through the contract registry, not through plain reflection.
+    /// </summary>
+    /// <remarks>
+    /// Proved by a consequence rather than by asking where the contract came from: the registry
+    /// relaxes <c>required</c>, because a GraphQL query selects a subset of a type's fields and
+    /// the ones it did not ask for come back unset. Reflection defaults would refuse this reply,
+    /// which is what reading it used to do — a caller who declared a source-generated context got
+    /// it used for a composed query and ignored for a hand-written one.
+    /// </remarks>
+    [Test]
+    public async Task A_reply_omitting_a_required_member_is_read_through_the_registry()
+    {
+        var response = Reply("""{"data":{"people":[{"age":36}]}}""");
+
+        var data = await response.ReadGraphQLAsync<PeopleData>();
+
+        Assert.That(data.People, Has.Length.EqualTo(1));
     }
 
     private static HttpResponseMessage Reply(string json)
