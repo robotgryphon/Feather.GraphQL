@@ -37,7 +37,6 @@ public class Tag
 }
 
 /// <summary>Same shape as <see cref="Person"/>, attributed. Used for the reflection-parity test.</summary>
-[GenerateQueryable("people")]
 public partial class AttributedPerson
 {
     public string Name { get; init; } = "";

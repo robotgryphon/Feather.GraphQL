@@ -2,7 +2,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using JetBrains.Annotations;
 
-namespace Feather.GraphQL.Linq.Query;
+namespace Feather.GraphQL.Linq.Filtering;
 
 /// <summary>
 /// Names the server's arguments for one query, from inside the chain.

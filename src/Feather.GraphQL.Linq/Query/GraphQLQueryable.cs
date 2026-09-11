@@ -1,26 +1,83 @@
 using System.Collections;
 using System.Linq.Expressions;
-using System.Runtime.CompilerServices;
 using Feather.GraphQL.Linq.Execution;
-using Feather.GraphQL.Linq.Expressions;
 using JetBrains.Annotations;
 
 namespace Feather.GraphQL.Linq.Query;
 
 /// <summary>
-/// Entry point for composing a GraphQL query with LINQ, without dependency injection.
+/// Where a GraphQL query starts.
 /// </summary>
 /// <remarks>
-/// A queryable from here has no executor, so it can be translated but not run —
-/// <see cref="GraphQLQueryableExtensions.ToGraphQLQuery"/> and
-/// <see cref="GraphQLQueryableExtensions.ToQueryPlan"/> are its terminals. Inject
-/// <see cref="IGraphQLQueryableSource"/> for one that executes.
+/// Two forms, differing only in whether the query can run. Without an executor it translates and
+/// nothing more — <see cref="GraphQLQueryableExtensions.ToGraphQLQuery"/> is its terminal, and
+/// anything that would execute is <c>FGQL016</c>. With one, every LINQ terminal works.
 /// </remarks>
 [PublicAPI]
 public static class GraphQLQueryable
 {
-    /// <summary>Starts a translate-only query over a type carrying <c>[GenerateQueryable]</c>.</summary>
-    public static IQueryable<T> For<T>() => new GraphQLQueryable<T>(new GraphQLQueryProvider(executor: null));
+    /// <summary>
+    /// Starts a translate-only query over <typeparamref name="T"/>, queried through
+    /// <paramref name="rootField"/>.
+    /// </summary>
+    /// <param name="rootField">The field on the schema's <c>Query</c> type.</param>
+    /// <param name="configure">
+    /// Anything else the schema requires: the filter and sort input names, how it pages, the
+    /// filter dialect.
+    /// </param>
+    public static IQueryable<T> For<T>(
+        string rootField,
+        Action<GraphQLQueryOptions>? configure = null)
+        => Create<T>(executor: null, Configured(rootField, configure));
+
+    /// <summary>
+    /// Starts a query that runs through <paramref name="executor"/>.
+    /// </summary>
+    /// <param name="executor">
+    /// The transport. <c>Feather.GraphQL.Linq.Providers.HttpClient</c> supplies one over
+    /// <c>HttpClient</c>; anything else — a websocket, an in-process schema, a recorded fixture —
+    /// is one class.
+    /// </param>
+    /// <param name="rootField">The field on the schema's <c>Query</c> type.</param>
+    /// <param name="configure">Anything else the schema requires.</param>
+    public static IQueryable<T> For<T>(
+        IGraphQLQueryExecutor executor,
+        string rootField,
+        Action<GraphQLQueryOptions>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(executor);
+
+        return Create<T>(executor, Configured(rootField, configure));
+    }
+
+    /// <summary>
+    /// Starts a query from options built elsewhere — shared across calls, or read from a
+    /// container.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="options"/> is used as given, including its
+    /// <see cref="GraphQLQueryOptions.RootField"/>; a query with none is <c>FGQL011</c>.
+    /// </remarks>
+    public static IQueryable<T> For<T>(IGraphQLQueryExecutor executor, GraphQLQueryOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(executor);
+        ArgumentNullException.ThrowIfNull(options);
+
+        return Create<T>(executor, options);
+    }
+
+    private static IQueryable<T> Create<T>(IGraphQLQueryExecutor? executor, GraphQLQueryOptions options)
+        => new GraphQLQueryable<T>(new GraphQLQueryProvider(executor, options));
+
+    private static GraphQLQueryOptions Configured(string rootField, Action<GraphQLQueryOptions>? configure)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(rootField);
+
+        var options = new GraphQLQueryOptions { RootField = rootField };
+        configure?.Invoke(options);
+
+        return options;
+    }
 }
 
 /// <inheritdoc cref="GraphQLQueryable"/>
@@ -63,92 +120,4 @@ internal sealed class GraphQLQueryable<T> : IQueryable<T>, IOrderedQueryable<T>,
             yield return row;
         }
     }
-}
-
-/// <summary>
-/// Captures composition, then executes it against the endpoint the queryable was created from.
-/// </summary>
-/// <remarks>
-/// Sync terminals block on the async path, as EF Core's do. That is a deliberate trade: an
-/// <see cref="IQueryable"/> has no async contract, and refusing to answer <c>ToList()</c> would
-/// reintroduce the runtime surprise this provider exists to remove. The async terminals in
-/// <see cref="GraphQLAsyncQueryableExtensions"/> are there for callers who would rather not
-/// block a thread on I/O.
-/// </remarks>
-internal sealed class GraphQLQueryProvider(IGraphQLQueryExecutor? executor) : IQueryProvider
-{
-    public IQueryable CreateQuery(Expression expression)
-    {
-        var elementType = expression.Type.GetInterfaces().Append(expression.Type)
-            .First(t => t.IsGenericType && t.GetGenericTypeDefinition() == typeof(IQueryable<>))
-            .GetGenericArguments()[0];
-
-        return (IQueryable)Activator.CreateInstance(
-            typeof(GraphQLQueryable<>).MakeGenericType(elementType), this, expression)!;
-    }
-
-    public IQueryable<TElement> CreateQuery<TElement>(Expression expression)
-        => new GraphQLQueryable<TElement>(this, expression);
-
-    public object Execute(Expression expression) => Execute<object>(expression);
-
-    public TResult Execute<TResult>(Expression expression)
-        => Block(ExecuteAsync<TResult>(expression, CancellationToken.None));
-
-    /// <summary>Runs a chain whose terminal is a result operator, such as <c>First</c>.</summary>
-    public async ValueTask<TResult> ExecuteAsync<TResult>(
-        Expression expression,
-        CancellationToken cancellationToken)
-    {
-        var plan = Plan(expression);
-        var data = await Run(plan, cancellationToken).ConfigureAwait(false);
-
-        return plan.ResultOperator switch
-        {
-            QueryResultOperator.Count => (TResult)(object)checked((int)ResultMaterializer.Count(plan, data)),
-            QueryResultOperator.LongCount => (TResult)(object)ResultMaterializer.Count(plan, data),
-            QueryResultOperator.Any => (TResult)(object)ResultMaterializer.Any(plan, data),
-            _ => ResultMaterializer.Reduce(plan, ResultMaterializer.Rows<TResult>(plan, data))
-        };
-    }
-
-    public IReadOnlyList<TElement> ExecuteSequence<TElement>(Expression expression)
-        => Block(ExecuteSequenceAsync<TElement>(expression, CancellationToken.None));
-
-    public async ValueTask<IReadOnlyList<TElement>> ExecuteSequenceAsync<TElement>(
-        Expression expression,
-        CancellationToken cancellationToken)
-    {
-        var plan = Plan(expression);
-        var data = await Run(plan, cancellationToken).ConfigureAwait(false);
-
-        return ResultMaterializer.Rows<TElement>(plan, data);
-    }
-
-    private GraphQLQueryPlan Plan(Expression expression)
-        => new GraphQLQueryTranslator(Executor.FilterProvider).Translate(expression);
-
-    private ValueTask<System.Text.Json.JsonElement> Run(
-        GraphQLQueryPlan plan,
-        CancellationToken cancellationToken)
-        => Executor.ExecuteAsync(plan, cancellationToken);
-
-    private IGraphQLQueryExecutor Executor
-        => executor ?? throw new GraphQLTranslationException("FGQL016",
-            "This queryable came from GraphQLQueryable.For<T>(), which has no executor and can "
-            + "only be translated. Call ToGraphQLQuery() to read the document, or inject "
-            + "IGraphQLQueryableSource for a queryable that executes.");
-
-    /// <summary>
-    /// The sync-over-async bridge. Isolated in one method so there is exactly one place to look
-    /// when a sync terminal misbehaves.
-    /// </summary>
-    private static TResult Block<TResult>(ValueTask<TResult> task)
-        => task.IsCompletedSuccessfully
-            ? task.Result
-            : ConfiguredBlock(task);
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private static TResult ConfiguredBlock<TResult>(ValueTask<TResult> task)
-        => task.AsTask().ConfigureAwait(false).GetAwaiter().GetResult();
 }

@@ -18,7 +18,7 @@ public class NestedSelectionTests
     /// </summary>
     [Test]
     public void A_materializing_call_after_a_nested_Select_is_transparent()
-        => Assert.That(GraphQLQueryable.For<Gadget>()
+        => Assert.That(Schema.Gadgets
                 .Where(g => g.Name == "x")
                 .Select(g => new
                 {
@@ -31,7 +31,7 @@ public class NestedSelectionTests
 
     [Test]
     public void ToList_works_the_same_way()
-        => Assert.That(GraphQLQueryable.For<Gadget>()
+        => Assert.That(Schema.Gadgets
                 .Where(g => g.Name == "x")
                 .Select(g => new
                 {
@@ -42,7 +42,7 @@ public class NestedSelectionTests
 
     [Test]
     public void Two_nested_chains_merge_under_one_parent()
-        => Assert.That(GraphQLQueryable.For<Gadget>()
+        => Assert.That(Schema.Gadgets
                 .Where(g => g.Name == "x")
                 .Select(g => new
                 {
@@ -55,7 +55,7 @@ public class NestedSelectionTests
     /// <summary>An object field must carry a selection set, so naming it selects its scalars.</summary>
     [Test]
     public void An_object_member_named_bare_expands_to_its_scalars()
-        => Assert.That(GraphQLQueryable.For<Gadget>()
+        => Assert.That(Schema.Gadgets
                 .Where(g => g.Name == "x")
                 .Select(g => new { g.Name, g.Size })
                 .ToQueryPlan().Query,
@@ -64,7 +64,7 @@ public class NestedSelectionTests
     /// <summary>A collection with no projection expands the same way.</summary>
     [Test]
     public void A_collection_member_named_bare_expands_to_its_scalars()
-        => Assert.That(GraphQLQueryable.For<Gadget>()
+        => Assert.That(Schema.Gadgets
                 .Where(g => g.Name == "x")
                 .Select(g => new { Primary = g.Parts!.Primary.ToArray() })
                 .ToQueryPlan().Query,
@@ -73,7 +73,7 @@ public class NestedSelectionTests
     /// <summary>A list of scalars is a leaf; a selection set on it would be invalid.</summary>
     [Test]
     public void A_scalar_list_stays_a_leaf()
-        => Assert.That(GraphQLQueryable.For<Gadget>()
+        => Assert.That(Schema.Gadgets
                 .Where(g => g.Name == "x")
                 .Select(g => new { g.Tags })
                 .ToQueryPlan().Query,
@@ -82,7 +82,7 @@ public class NestedSelectionTests
     /// <summary>An explicit projection wins; expansion only fills an empty selection.</summary>
     [Test]
     public void An_explicit_projection_is_not_expanded()
-        => Assert.That(GraphQLQueryable.For<Gadget>()
+        => Assert.That(Schema.Gadgets
                 .Where(g => g.Name == "x")
                 .Select(g => new { g.Size!.Minimum, g.Size })
                 .ToQueryPlan().Query,
@@ -94,7 +94,7 @@ public class NestedSelectionTests
     /// </summary>
     [Test]
     public void Expansion_skips_nested_fields()
-        => Assert.That(GraphQLQueryable.For<Gadget>()
+        => Assert.That(Schema.Gadgets
                 .Where(g => g.Name == "x")
                 .Select(g => new { g.Name, g.Nested })
                 .ToQueryPlan().Query,
@@ -107,7 +107,7 @@ public class NestedSelectionTests
     /// </summary>
     [Test]
     public void A_member_with_no_scalars_is_FGQL014()
-        => Assert.That(ThrowsWith(() => GraphQLQueryable.For<Gadget>()
+        => Assert.That(ThrowsWith(() => Schema.Gadgets
                 .Where(g => g.Name == "x")
                 .Select(g => new { g.Parts })
                 .ToQueryPlan()),
@@ -116,7 +116,7 @@ public class NestedSelectionTests
     /// <summary>Computation the builder cannot see the fields through is still refused.</summary>
     [Test]
     public void Unreadable_computation_is_still_FGQL013()
-        => Assert.That(ThrowsWith(() => GraphQLQueryable.For<Gadget>()
+        => Assert.That(ThrowsWith(() => Schema.Gadgets
                 .Where(g => g.Name == "x")
                 .Select(g => new { Shouted = g.Name.ToUpperInvariant() })
                 .ToQueryPlan()),

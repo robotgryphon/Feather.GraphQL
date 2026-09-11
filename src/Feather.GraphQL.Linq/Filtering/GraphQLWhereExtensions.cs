@@ -2,7 +2,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using JetBrains.Annotations;
 
-namespace Feather.GraphQL.Linq.Query;
+namespace Feather.GraphQL.Linq.Filtering;
 
 /// <summary>
 /// <c>Where</c> overloads for the two things LINQ's own cannot say: that the predicate is written

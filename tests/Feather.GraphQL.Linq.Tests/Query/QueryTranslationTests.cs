@@ -16,7 +16,7 @@ public class QueryTranslationTests
     [Test]
     public void Filtered_query_binds_the_filter_to_a_variable()
     {
-        var plan = GraphQLQueryable.For<Person>()
+        var plan = Schema.People
             .Where(p => p.Name == "John")
             .ToQueryPlan();
 
@@ -30,12 +30,12 @@ public class QueryTranslationTests
 
     [Test]
     public void JsonIgnore_members_are_not_selected()
-        => Assert.That(GraphQLQueryable.For<Person>().Where(p => p.Age > 1).ToQueryPlan().Query,
+        => Assert.That(Schema.People.Where(p => p.Age > 1).ToQueryPlan().Query,
             Does.Not.Contain("secret"));
 
     [Test]
     public void Projection_determines_the_selection_set()
-        => Assert.That(GraphQLQueryable.For<Person>()
+        => Assert.That(Schema.People
                 .Where(p => p.Age > 30)
                 .Select(p => new { p.Name, p.Email })
                 .ToQueryPlan().Query,
@@ -43,7 +43,7 @@ public class QueryTranslationTests
 
     [Test]
     public void Nested_projection_nests_the_selection_set()
-        => Assert.That(GraphQLQueryable.For<Author>()
+        => Assert.That(Schema.Authors
                 .Where(a => a.Name == "Le Guin")
                 .Select(a => new { a.Name, Titles = a.Books.Select(b => b.Title) })
                 .ToQueryPlan().Query,
@@ -52,7 +52,7 @@ public class QueryTranslationTests
     [Test]
     public void Ordering_and_paging_bind_their_own_variables()
     {
-        var plan = GraphQLQueryable.For<Person>()
+        var plan = Schema.People
             .Where(p => p.Age > 30)
             .OrderBy(p => p.Name)
             .Take(5)
@@ -70,12 +70,12 @@ public class QueryTranslationTests
 
     [Test]
     public void Cursor_paging_wraps_the_selection_in_nodes_and_takes_first()
-        => Assert.That(GraphQLQueryable.For<CursorPerson>().Take(10).ToQueryPlan().Query,
+        => Assert.That(Schema.Connected.Take(10).ToQueryPlan().Query,
             Is.EqualTo("query($v0: Int) { connected(first: $v0) { nodes { name } } }"));
 
     [Test]
     public void Offset_paging_wraps_the_selection_in_items()
-        => Assert.That(GraphQLQueryable.For<OffsetPerson>().Skip(5).Take(10).ToQueryPlan().Query,
+        => Assert.That(Schema.Offset.Skip(5).Take(10).ToQueryPlan().Query,
             Is.EqualTo("query($v0: Int, $v1: Int) { offset(take: $v0, skip: $v1) { items { name } } }"));
 
     /// <summary>
@@ -85,8 +85,8 @@ public class QueryTranslationTests
     [Test]
     public void Different_predicates_over_one_selection_set_produce_identical_query_text()
     {
-        string first = GraphQLQueryable.For<Person>().Where(p => p.Name == "John").ToQueryPlan().Query;
-        string second = GraphQLQueryable.For<Person>()
+        string first = Schema.People.Where(p => p.Name == "John").ToQueryPlan().Query;
+        string second = Schema.People
             .Where(p => p.Age > 30 && p.Name != "Jane")
             .ToQueryPlan().Query;
 
@@ -100,11 +100,11 @@ public class QueryTranslationTests
     [Test]
     public void Equivalent_chains_print_identically()
     {
-        var single = GraphQLQueryable.For<Person>()
+        var single = Schema.People
             .Where(p => p.Age > 30 && p.Name == "John")
             .ToQueryPlan().Query;
 
-        var split = GraphQLQueryable.For<Person>()
+        var split = Schema.People
             .Where(p => p.Age > 30).Where(p => p.Name == "John")
             .ToQueryPlan().Query;
 

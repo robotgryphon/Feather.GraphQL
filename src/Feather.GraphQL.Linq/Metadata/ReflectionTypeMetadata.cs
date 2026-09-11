@@ -11,8 +11,8 @@ namespace Feather.GraphQL.Linq.Metadata;
 /// else's entity, typically, reached through the <see cref="IQueryable{T}"/> extensions.
 /// </summary>
 /// <remarks>
-/// This is the one place reflection survives in the translation path. Attributed types take
-/// the generated path instead. Instances are cached per type in
+/// This is the one place reflection survives in the translation path. Generated metadata takes
+/// precedence when present. Instances are cached per type in
 /// <see cref="GraphQLTypeMetadataRegistry"/>, so the reflection cost is paid once.
 /// </remarks>
 internal sealed class ReflectionTypeMetadata : IGraphQLTypeMetadata
@@ -20,24 +20,12 @@ internal sealed class ReflectionTypeMetadata : IGraphQLTypeMetadata
     private readonly Dictionary<string, GraphQLFieldMetadata> _byClrName;
 
     public Type ClrType { get; }
-    public string? RootField { get; }
-    public PagingKind Paging { get; }
-    public string FilterInputName { get; }
-    public string SortInputName { get; }
     public IReadOnlyList<GraphQLFieldMetadata> Fields { get; }
 
     private ReflectionTypeMetadata(
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type clrType)
     {
         ClrType = clrType;
-
-        var queryable = clrType.GetCustomAttribute<GenerateQueryableAttribute>();
-        var filter = clrType.GetCustomAttribute<GenerateFilterAttribute>();
-
-        RootField = queryable?.RootField;
-        Paging = queryable?.Paging ?? PagingKind.None;
-        FilterInputName = filter?.FilterInput ?? $"{clrType.Name}FilterInput";
-        SortInputName = filter?.SortInput ?? $"{clrType.Name}SortInput";
 
         var fields = new List<GraphQLFieldMetadata>();
         foreach (var property in clrType.GetProperties(BindingFlags.Public | BindingFlags.Instance))

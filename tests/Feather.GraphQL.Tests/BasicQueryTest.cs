@@ -25,13 +25,13 @@ public class BasicQueryTest : IntegrationServerTest
 
         Assert.That(response, Is.Not.Null.And.InstanceOf<HttpResponseMessage>());
 
-        var human = await response.Content.ReadAsGraphQLAsync<HumanResponse>(CancellationToken.None);
-        Assert.That(human?.Data, Is.Not.Null.And.InstanceOf<HumanResponse>());
+        // Returns the data, or throws: there is no wrapper to unpack and no errors to check.
+        var human = await response.ReadGraphQLAsync<HumanResponse>(CancellationToken.None);
 
         using (Assert.EnterMultipleScope())
         {
-            Assert.That(human.Data.Human, Is.Not.Null.And.InstanceOf<Human>());
-            Assert.That(human.Data.Human!.Name, Is.EqualTo(name));
+            Assert.That(human.Human, Is.Not.Null.And.InstanceOf<Human>());
+            Assert.That(human.Human!.Name, Is.EqualTo(name));
         }
     }
 

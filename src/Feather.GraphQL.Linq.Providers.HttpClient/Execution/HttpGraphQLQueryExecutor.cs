@@ -1,10 +1,8 @@
 using System.Text.Json;
 using Feather.GraphQL.Http;
 using Feather.GraphQL.Http.Request;
-using Feather.GraphQL.Http.Response;
 using Feather.GraphQL.Linq.Execution;
 using Feather.GraphQL.Linq.Filtering;
-using Feather.GraphQL.Linq.Query;
 using JetBrains.Annotations;
 
 namespace Feather.GraphQL.Linq.Providers;
@@ -37,7 +35,10 @@ public sealed class HttpGraphQLQueryExecutor : IGraphQLQueryExecutor
     /// Null or empty posts to the base address unchanged, for a client already pointed straight
     /// at the endpoint. An absolute URI is used as-is and ignores the base address.
     /// </param>
-    /// <param name="filterProvider">The dialect predicates are lowered to.</param>
+    /// <param name="filterProvider">
+    /// The dialect predicates are lowered to. Only used when a query does not name one of its
+    /// own; <c>GraphQLHttpQueryOptions.FilterProvider</c> is the usual way in.
+    /// </param>
     /// <remarks>
     /// Resolution is <see cref="HttpClient"/>'s own, which means a base address is treated as a
     /// document rather than a directory: <c>https://host/v1</c> plus <c>graphql</c> is
@@ -59,10 +60,12 @@ public sealed class HttpGraphQLQueryExecutor : IGraphQLQueryExecutor
     }
 
     public async ValueTask<JsonElement> ExecuteAsync(
-        GraphQLQueryPlan plan,
+        string query,
+        IReadOnlyDictionary<string, object?> variables,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentException.ThrowIfNullOrWhiteSpace(query);
+        ArgumentNullException.ThrowIfNull(variables);
 
         // Checked here rather than in the constructor: a base address can legitimately be set on
         // the client after this executor was built.
@@ -71,26 +74,16 @@ public sealed class HttpGraphQLQueryExecutor : IGraphQLQueryExecutor
                 "The HttpClient has no BaseAddress, so a relative GraphQL endpoint cannot be "
                 + "resolved. Set BaseAddress, or pass an absolute endpoint path.");
 
-        var request = new GraphQLRequest(plan.Query, plan.Variables);
+        var request = new GraphQLRequest(query, variables);
 
-        using var response = await _client.SendGraphQLRequestAsync(request, Endpoint, cancellationToken)
+        // Not `using`: when the read throws, GraphQLException carries this response so the caller
+        // can read the body that explains the failure. Disposal passes to the exception with it.
+        var response = await _client.SendGraphQLRequestAsync(request, Endpoint, cancellationToken)
             .ConfigureAwait(false);
 
-        var body = await response.Content
-            .ReadAsGraphQLAsync<JsonElement>(cancellationToken)
-            .ConfigureAwait(false);
+        var data = await response.ReadGraphQLAsync<JsonElement>(cancellationToken).ConfigureAwait(false);
+        response.Dispose();
 
-        // A GraphQL error is not an HTTP error: servers routinely answer 200 with an errors array,
-        // so the status code is checked only after the body has had its say.
-        if (body?.Errors is { Length: > 0 })
-            throw new GraphQLResponseException(body);
-
-        response.EnsureSuccessStatusCode();
-
-        if (body is null || body.Data.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
-            throw new GraphQLTranslationException("FGQL017",
-                "The response carried neither data nor errors.");
-
-        return body.Data;
+        return data;
     }
 }

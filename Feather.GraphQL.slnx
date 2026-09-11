@@ -10,7 +10,6 @@
     <File Path=".editorconfig" />
     <File Path=".gitignore" />
     <File Path="Directory.Build.props" />
-    <File Path="Directory.Build.targets" />
     <File Path="dotnet-tools.json" />
     <File Path="LICENSE.txt" />
     <File Path="README.md" />

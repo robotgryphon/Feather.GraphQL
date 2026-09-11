@@ -1,4 +1,5 @@
 using System.Net;
+using Feather.GraphQL;
 using Feather.GraphQL.Http;
 using Feather.GraphQL.Linq.Query;
 
@@ -11,15 +12,15 @@ namespace Feather.GraphQL.Linq.Providers.Tests;
 [TestFixture]
 public class HttpExecutorTests
 {
-    private static IGraphQLQueryableSource Source(StubHandler handler)
-        => handler.Client().CreateQueryable();
+    private static IQueryable<Person> Query(StubHandler handler)
+        => handler.Client().CreateQueryable<Person>("people");
 
     [Test]
     public void The_document_and_its_variables_are_posted_together()
     {
         var handler = new StubHandler("""{"data":{"people":[{"name":"Ada"}]}}""");
 
-        Source(handler).Queryable<Person>().Where(p => p.Age > 30).ToArray();
+        Query(handler).Where(p => p.Age > 30).ToArray();
 
         Assert.Multiple(() =>
         {
@@ -34,7 +35,7 @@ public class HttpExecutorTests
     {
         var handler = new StubHandler("""{"data":{"people":[{"name":"Ada","age":36}]}}""");
 
-        var people = Source(handler).Queryable<Person>().Where(p => p.Age > 30).ToArray();
+        var people = Query(handler).Where(p => p.Age > 30).ToArray();
 
         Assert.That(people[0].Name, Is.EqualTo("Ada"));
     }
@@ -48,10 +49,31 @@ public class HttpExecutorTests
     {
         var handler = new StubHandler("""{"errors":[{"message":"Unknown field 'people'."}]}""");
 
-        var exception = Assert.Throws<GraphQLResponseException>(
-            () => Source(handler).Queryable<Person>().Where(p => p.Age > 30).ToArray());
+        var exception = Assert.Throws<GraphQLHttpException>(
+            () => Query(handler).Where(p => p.Age > 30).ToArray());
 
-        Assert.That(exception!.Response.Errors![0].Message, Is.EqualTo("Unknown field 'people'."));
+        Assert.That(exception!.Errors[0].Message, Is.EqualTo("Unknown field 'people'."));
+    }
+
+    /// <summary>
+    /// The converter that reads an error's <c>path</c> is internal and named only by an attribute,
+    /// so nothing but a round trip proves the serializer can still reach it.
+    /// </summary>
+    [Test]
+    public void An_error_path_is_deserialized()
+    {
+        var handler = new StubHandler(
+            """{"errors":[{"message":"nope","path":["people",0,"name"],"locations":[{"line":1,"column":9}]}]}""");
+
+        var exception = Assert.Throws<GraphQLHttpException>(() => Query(handler).Where(p => p.Age > 30).ToArray());
+
+        var error = exception!.Errors[0];
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(error.Path, Is.EqualTo(new object[] { "people", 0d, "name" }));
+            Assert.That(error.Locations![0].Line, Is.EqualTo(1));
+        });
     }
 
     [Test]
@@ -60,8 +82,8 @@ public class HttpExecutorTests
         var handler = new StubHandler("""{"errors":[{"message":"nope"}]}""",
             HttpStatusCode.InternalServerError);
 
-        Assert.Throws<GraphQLResponseException>(
-            () => Source(handler).Queryable<Person>().Where(p => p.Age > 30).ToArray());
+        Assert.Throws<GraphQLHttpException>(
+            () => Query(handler).Where(p => p.Age > 30).ToArray());
     }
 
     [Test]
@@ -70,18 +92,65 @@ public class HttpExecutorTests
         var handler = new StubHandler("""{"data":null}""", HttpStatusCode.BadGateway);
 
         Assert.Throws<HttpRequestException>(
-            () => Source(handler).Queryable<Person>().Where(p => p.Age > 30).ToArray());
+            () => Query(handler).Where(p => p.Age > 30).ToArray());
     }
 
+    /// <summary>
+    /// Neither data nor errors is still a failed query, and the exception says so rather than
+    /// handing back an empty result.
+    /// </summary>
     [Test]
-    public void A_response_with_neither_data_nor_errors_is_FGQL017()
+    public void A_response_with_neither_data_nor_errors_throws()
     {
         var handler = new StubHandler("{}");
 
-        var exception = Assert.Throws<GraphQLTranslationException>(
-            () => Source(handler).Queryable<Person>().Where(p => p.Age > 30).ToArray());
+        var exception = Assert.Throws<GraphQLHttpException>(
+            () => Query(handler).Where(p => p.Age > 30).ToArray());
 
-        Assert.That(exception!.DiagnosticId, Is.EqualTo("FGQL017"));
+        Assert.Multiple(() =>
+        {
+            Assert.That(exception!.Errors, Is.Empty);
+            Assert.That(exception.Message, Does.Contain("neither data nor errors"));
+        });
+    }
+
+    /// <summary>
+    /// The point of the base type: code that only cares that the query failed does not have to
+    /// name the transport that carried it.
+    /// </summary>
+    [Test]
+    public void A_failure_is_catchable_as_the_transport_neutral_base()
+    {
+        var handler = new StubHandler("""{"errors":[{"message":"nope"}]}""");
+
+        var exception = Assert.Catch<GraphQLException>(
+            () => Query(handler).Where(p => p.Age > 30).ToArray());
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(exception, Is.InstanceOf<GraphQLHttpException>());
+            Assert.That(exception!.Errors[0].Message, Is.EqualTo("nope"));
+            Assert.That(exception.Message, Does.Contain("nope"));
+        });
+
+        ((GraphQLHttpException)exception!).Response.Dispose();
+    }
+
+    /// <summary>
+    /// The response is the useful part of a failure, so it must survive the throw undisposed.
+    /// </summary>
+    [Test]
+    public async Task The_failing_response_is_still_readable()
+    {
+        var handler = new StubHandler("""{"errors":[{"message":"nope"}]}""");
+
+        var exception = Assert.Throws<GraphQLHttpException>(
+            () => Query(handler).Where(p => p.Age > 30).ToArray());
+
+        string body = await exception!.Response.Content.ReadAsStringAsync();
+
+        Assert.That(body, Does.Contain("nope"));
+        exception.Response.Dispose();
     }
 
     [Test]
@@ -89,7 +158,7 @@ public class HttpExecutorTests
     {
         var handler = new StubHandler("""{"data":{"people":[{"name":"Ada"}]}}""");
 
-        var people = await Source(handler).Queryable<Person>().Where(p => p.Age > 30).ToListAsync();
+        var people = await Query(handler).Where(p => p.Age > 30).ToListAsync();
 
         Assert.That(people[0].Name, Is.EqualTo("Ada"));
     }

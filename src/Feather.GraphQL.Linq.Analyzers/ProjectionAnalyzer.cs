@@ -46,8 +46,9 @@ public sealed class ProjectionAnalyzer : DiagnosticAnalyzer
             is not IMethodSymbol { Name: "Select" } method)
             return;
 
-        // Only this library's queryables. An EF or in-memory Select has entirely different rules.
-        if (!IsGraphQLQueryable(method.ReceiverType ?? method.Parameters.FirstOrDefault()?.Type))
+        // Only this library's queryables. An EF or in-memory Select has entirely different
+        // rules, and applying these to one would be a false error on unrelated code.
+        if (!IsGraphQLQueryable(context, invocation))
             return;
 
         var lambda = invocation.ArgumentList.Arguments.Count == 1
@@ -235,21 +236,73 @@ public sealed class ProjectionAnalyzer : DiagnosticAnalyzer
     }
 
     /// <summary>
-    /// True for <c>IQueryable&lt;T&gt;</c> whose element type carries <c>[GenerateQueryable]</c>
-    /// — the only projections these rules govern.
+    /// True when the chain visibly starts at one of this library's entry points.
     /// </summary>
-    private static bool IsGraphQLQueryable(ITypeSymbol? type)
+    /// <remarks>
+    /// <para>
+    /// There is no attribute to look for any more — a queried type is a plain POCO, and what
+    /// makes it queryable is the call that named its root field. So ownership is decided by
+    /// walking the chain back to its origin.
+    /// </para>
+    /// <para>
+    /// That works when the whole chain is one expression and not otherwise: a queryable arriving
+    /// through a variable, a parameter or a field is invisible here, and the analyzer says
+    /// nothing rather than guessing. This is the `FGQL006` case the design anticipates — the
+    /// runtime enforces the same rule either way.
+    /// </para>
+    /// </remarks>
+    private static bool IsGraphQLQueryable(
+        SyntaxNodeAnalysisContext context,
+        InvocationExpressionSyntax invocation)
     {
-        if (GraphQLTypeFacts.ElementType(type!) is not { } element)
-            return false;
+        var current = invocation.Expression is MemberAccessExpressionSyntax access
+            ? access.Expression
+            : null;
 
-        foreach (var attribute in element.GetAttributes())
+        while (current is not null)
         {
-            if (attribute.AttributeClass?.ToDisplayString()
-                == "Feather.GraphQL.Linq.GenerateQueryableAttribute")
-                return true;
+            switch (current)
+            {
+                case InvocationExpressionSyntax call:
+                {
+                    if (context.SemanticModel.GetSymbolInfo(call, context.CancellationToken).Symbol
+                        is IMethodSymbol origin && IsEntryPoint(origin))
+                        return true;
+
+                    current = call.Expression is MemberAccessExpressionSyntax member
+                        ? member.Expression
+                        : null;
+                    continue;
+                }
+
+                case ParenthesizedExpressionSyntax parenthesized:
+                    current = parenthesized.Expression;
+                    continue;
+
+                default:
+                    return false;
+            }
         }
 
         return false;
+    }
+
+    /// <summary>The calls that produce a queryable of this library's: they name a root field.</summary>
+    /// <remarks>
+    /// Matched on the outermost containing type, because an extension member's own container is
+    /// a compiler-generated nested type whose name is not something to depend on.
+    /// </remarks>
+    private static bool IsEntryPoint(IMethodSymbol method)
+    {
+        if (method.Name is not ("CreateQueryable" or "For"))
+            return false;
+
+        var container = method.ContainingType;
+        while (container?.ContainingType is not null)
+            container = container.ContainingType;
+
+        return container?.ToDisplayString() is
+            "Feather.GraphQL.Linq.Providers.HttpClientGraphQLQueryableExtensions"
+            or "Feather.GraphQL.Linq.Query.GraphQLQueryable";
     }
 }

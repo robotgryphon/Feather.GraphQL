@@ -52,9 +52,9 @@ internal static class AnalyzerHarness
     private const string Preamble = """
         using System.Collections.Generic;
         using System.Linq;
-        using Feather.GraphQL.Linq;
+        using Feather.GraphQL.Linq.Providers;
+        using Feather.GraphQL.Linq.Query;
 
-        [GenerateQueryable("countries")]
         public class Country
         {
             public string Name { get; set; } = "";
@@ -95,7 +95,10 @@ internal static class AnalyzerHarness
 
         public static class Snippet
         {
-            public static object? Run(IQueryable<Country> countries, IQueryable<NotQueryable> others)
+            // A snippet writes its own chain, so the analyzer can see where it starts — which is
+            // now the only thing marking a queryable as this library's.
+            public static object? Run(System.Net.Http.HttpClient client, IQueryable<Country> loose,
+                IQueryable<NotQueryable> others)
             {
         """;
 
@@ -111,10 +114,12 @@ internal static class AnalyzerHarness
 
         // Loaded on demand, so it may not be in the AppDomain yet.
         references.Add(MetadataReference.CreateFromFile(
-            typeof(GenerateQueryableAttribute).Assembly.Location));
+            typeof(Feather.GraphQL.Linq.Query.GraphQLQueryable).Assembly.Location));
+        references.Add(MetadataReference.CreateFromFile(
+            typeof(Feather.GraphQL.Linq.Providers.HttpClientGraphQLQueryableExtensions).Assembly.Location));
 
         string core = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
-        foreach (string name in new[] { "System.Runtime.dll", "netstandard.dll", "System.Linq.Expressions.dll" })
+        foreach (string name in new[] { "System.Runtime.dll", "netstandard.dll", "System.Linq.Expressions.dll", "System.Net.Http.dll", "System.Collections.dll" })
         {
             string path = Path.Combine(core, name);
             if (File.Exists(path))

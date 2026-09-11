@@ -25,6 +25,6 @@
   <ItemGroup>
     <!-- Referenced as a library, not as an analyzer: these tests run it by hand over snippets. -->
     <ProjectReference Include="..\..\src\Feather.GraphQL.Linq.Analyzers\Feather.GraphQL.Linq.Analyzers.csproj" />
-    <ProjectReference Include="..\..\src\Feather.GraphQL.Linq\Feather.GraphQL.Linq.csproj" />
+    <ProjectReference Include="..\..\src\Feather.GraphQL.Linq.Providers.HttpClient\Feather.GraphQL.Linq.Providers.HttpClient.csproj" />
   </ItemGroup>
 </Project>

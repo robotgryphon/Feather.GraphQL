@@ -33,7 +33,7 @@ public static class GraphQLAsyncQueryableExtensions
             return source as IAsyncEnumerable<T>
                 ?? throw new GraphQLTranslationException("FGQL019",
                     $"'{source.GetType().Name}' is not a GraphQL queryable. Async enumeration "
-                    + "requires a queryable from IGraphQLQueryableSource.");
+                    + "requires one created with GraphQLQueryable.For or CreateQueryable.");
         }
 
         public async Task<List<T>> ToListAsync(CancellationToken cancellationToken = default)
@@ -134,5 +134,6 @@ public static class GraphQLAsyncQueryableExtensions
         => source.Provider as GraphQLQueryProvider
             ?? throw new GraphQLTranslationException("FGQL019",
                 $"'{source.Provider.GetType().Name}' is not a GraphQL query provider. The async "
-                + "terminals require a queryable from IGraphQLQueryableSource.");
+                + "terminals require a queryable created with GraphQLQueryable.For or "
+                + "CreateQueryable.");
 }

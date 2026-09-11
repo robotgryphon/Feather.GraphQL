@@ -1,7 +1,6 @@
 using System.Linq.Expressions;
 using System.Diagnostics.CodeAnalysis;
 using Feather.GraphQL.Linq.Expressions;
-using JetBrains.Annotations;
 
 namespace Feather.GraphQL.Linq.Query;
 
@@ -15,9 +14,9 @@ namespace Feather.GraphQL.Linq.Query;
 /// translator produces both halves at once, so they cannot drift.
 /// </para>
 /// <para>
-/// It names a document and its variables, not a request: nothing here knows about HTTP, which
-/// is what lets a transport be chosen rather than assumed. See
-/// <see cref="Execution.IGraphQLQueryExecutor"/>.
+/// Internal: a transport is handed the document and its variables and nothing else, because
+/// that is all it reads. The rest of this — element type, paging, projection, result operator —
+/// is consumed by the materializer after the transport has returned.
 /// </para>
 /// </remarks>
 /// <param name="Query">The printed document, parameterized: this is what gets sent.</param>
@@ -27,8 +26,7 @@ namespace Feather.GraphQL.Linq.Query;
 /// <param name="Paging">Which wrapper, if any, sits between the root field and the elements.</param>
 /// <param name="Projection">The <c>Select</c> lambda, applied to each materialized element.</param>
 /// <param name="ResultOperator">How the sequence is reduced to the caller's result.</param>
-[PublicAPI]
-public sealed record GraphQLQueryPlan(
+internal sealed record GraphQLQueryPlan(
     [property: StringSyntax("GraphQL")] string Query,
     IReadOnlyDictionary<string, object?> Variables,
     Type ElementType,

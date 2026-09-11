@@ -16,16 +16,15 @@ internal sealed class StubExecutor : IGraphQLQueryExecutor
 
     public IFilterTranslationProvider FilterProvider => HotChocolateFilterProvider.Instance;
 
-    /// <summary>The plan the last execution was given, for asserting on what was asked.</summary>
-    public GraphQLQueryPlan? LastPlan { get; private set; }
+    private string? _query;
+    private IReadOnlyDictionary<string, object?>? _variables;
 
-    /// <summary>The document text of the last execution.</summary>
-    public string Document => LastPlan?.Query
-        ?? throw new InvalidOperationException("Nothing was executed.");
+    /// <summary>The document of the last execution — what the transport was actually handed.</summary>
+    public string Document => _query ?? throw new InvalidOperationException("Nothing was executed.");
 
     /// <summary>The variables payload of the last execution, as JSON.</summary>
     public string Variables => JsonSerializer.Serialize(
-        LastPlan?.Variables ?? throw new InvalidOperationException("Nothing was executed."));
+        _variables ?? throw new InvalidOperationException("Nothing was executed."));
 
     private StubExecutor(string dataJson, Exception? failure = null)
     {
@@ -33,20 +32,23 @@ internal sealed class StubExecutor : IGraphQLQueryExecutor
         _failure = failure;
     }
 
-    /// <summary>A source answering with the given <c>data</c> element.</summary>
-    public static (IGraphQLQueryableSource Source, StubExecutor Executor) Returning(string dataJson)
-    {
-        var executor = new StubExecutor(dataJson);
-        return (new GraphQLQueryableSource(executor), executor);
-    }
+    /// <summary>A transport answering with the given <c>data</c> element.</summary>
+    public static StubExecutor Returning(string dataJson) => new(dataJson);
 
-    /// <summary>A source whose transport fails, standing in for any server-reported error.</summary>
-    public static IGraphQLQueryableSource Failing(Exception failure)
-        => new GraphQLQueryableSource(new StubExecutor("{}", failure));
+    /// <summary>A transport that fails, standing in for any server-reported error.</summary>
+    public static StubExecutor Failing(Exception failure) => new("{}", failure);
 
-    public ValueTask<JsonElement> ExecuteAsync(GraphQLQueryPlan plan, CancellationToken cancellationToken)
+    /// <summary>Starts a query that runs through this stub.</summary>
+    public IQueryable<T> Queryable<T>(string rootField, Action<GraphQLQueryOptions>? configure = null)
+        => GraphQLQueryable.For<T>(this, rootField, configure);
+
+    public ValueTask<JsonElement> ExecuteAsync(
+        string query,
+        IReadOnlyDictionary<string, object?> variables,
+        CancellationToken cancellationToken)
     {
-        LastPlan = plan;
+        _query = query;
+        _variables = variables;
         cancellationToken.ThrowIfCancellationRequested();
 
         return _failure is not null

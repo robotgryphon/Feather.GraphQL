@@ -12,13 +12,16 @@ The Library will try to follow the following standards and documents:
 
 | Package | What it is | References |
 | --- | --- | --- |
-| `Feather.GraphQL.Abstractions` | Query, error and response primitives | — |
+| `Feather.GraphQL.Abstractions` | The GraphQL error model and `GraphQLException`, transport-neutral | — |
 | `Feather.GraphQL.Http` | `HttpClient` extensions for sending query strings | Abstractions |
-| `Feather.GraphQL.Linq` | Attributes, LINQ → GraphQL translation and materialization, plus the analyzer | — |
+| `Feather.GraphQL.Linq` | LINQ → GraphQL translation and materialization, plus the analyzer | — |
 | `Feather.GraphQL.Linq.Providers.HttpClient` | The LINQ provider over `HttpClient`, plus DI | Linq, Http |
 
 A toolkit, not a framework: **Linq and Http do not reference each other.** Take the translator
 without a transport, the transport without a translator, or the provider package that joins them.
+`Abstractions` holds only the error model — `GraphQLError`, `GraphQLLocation`, `ErrorPath` and the
+abstract `GraphQLException` — so a websocket or gRPC transport can report failures in the same
+vocabulary, and be caught the same way, without taking a dependency on HTTP.
 
 ## Usage
 
@@ -92,14 +95,14 @@ var httpResponse = await httpClient.SendGraphQLQueryAsync("""
     }
     """);
 
-// Read the response headers/content similar to string or JSON data
-var graphQLResponse = await httpResponse.Content.ReadAsGraphQLAsync<PersonResponse>();
+// Read the data, or throw GraphQLHttpException carrying the server's errors and this response
+var graphQLResponse = await httpResponse.ReadGraphQLAsync<PersonResponse>();
 
 // Get the information you need out of the response
-var personName = graphQLResponse.Data.Person.Name;
+var personName = graphQLResponse.Person.Name;
 ```
 
-Mutations go through `SendMutationAsync`, which takes a query string the same way.
+A mutation goes through the same call — it is a document like any other.
 
 ### Query with LINQ
 
@@ -109,16 +112,44 @@ HTTP, and `Feather.GraphQL.Http` knows nothing about LINQ — the two meet only 
 Another transport (websocket, in-process schema, recorded fixtures) is one implementation of
 `IGraphQLQueryExecutor`.
 
-Turn an `HttpClient` into a query and finish it with an ordinary LINQ terminal:
+Turn an `HttpClient` into a query and finish it with an ordinary LINQ terminal. The type stays a
+plain POCO — nothing is attributed; what the schema calls things is said at the call site:
 
 ```csharp
-using var client = new HttpClient { BaseAddress = new Uri("https://countries.example/graphql") };
+using var client = new HttpClient { BaseAddress = new Uri("https://countries.example/") };
 
-List<Country> european = await client.CreateQueryable<Country>()
+List<Country> european = await client.CreateQueryable<Country>("countries")
     .Where(c => c.Continent.Name == "Europe")
     .OrderBy(c => c.Name)
     .Take(25)
     .ToListAsync(ct);
+```
+
+`"countries"` is the field on the schema's `Query` type. Everything else the schema requires goes
+in the options delegate:
+
+```csharp
+client.CreateQueryable<Country>("countries", o =>
+{
+    o.EndpointPath = "api/v2/graphql";   // default: the client's BaseAddress
+    o.Paging = PagingKind.Cursor;        // nodes { … } and first:/last:
+    o.FilterInput = "CountryWhereInput"; // default: {Type}FilterInput
+    o.SortInput = "CountryOrderInput";   // default: {Type}SortInput
+    o.FilterProvider = new MyDialect();  // default: HotChocolate's
+});
+```
+
+Options can also be built elsewhere and shared — as an instance, or from a container that
+configured them:
+
+```csharp
+services.Configure<GraphQLHttpQueryOptions>(o => o.EndpointPath = "api/v2/graphql");
+
+public sealed class Service(HttpClient client, IOptions<GraphQLHttpQueryOptions> options)
+{
+    public Task<List<Country>> AllAsync(CancellationToken ct) =>
+        client.CreateQueryable<Country>("countries", options).ToListAsync(ct);
+}
 ```
 
 That is the whole setup. There is no registration call: headers, auth and retry are configured on
@@ -126,104 +157,44 @@ the client the way they would be for any other use of it, and how the client rea
 using it — a field, a constructor parameter, a DI registration of your own — is your app's
 choice, not this library's. Talking to two schemas means two clients.
 
-`CreateQueryable<T>()` builds a source per call. When several query types share one endpoint,
-keep the source instead and the executor is built once:
+Several query types against one endpoint is several calls on the same client — there is nothing
+in between to build or hold:
 
 ```csharp
-var countries = client.AsGraphQLQueryableSource();
-
-var europe = await countries.Queryable<Country>().Where(…).ToListAsync(ct);
-var africa = await countries.Queryable<Continent>().Where(…).ToListAsync(ct);
-```
-
-Both post to the client's `BaseAddress`. For a server that serves GraphQL from a path below it,
-pass one — an absolute URI is used as-is and ignores the base address:
-
-```csharp
-client.CreateQueryable<Country>("api/v2/graphql");
-client.AsGraphQLQueryableSource("api/v2/graphql");
+var europe = await client.CreateQueryable<Country>("countries").Where(…).ToListAsync(ct);
+var africa = await client.CreateQueryable<Continent>("continents").Where(…).ToListAsync(ct);
 ```
 
 > [!NOTE]
-> Resolution is `HttpClient`'s own, which treats a base address as a document rather than a
-> directory: `https://host/v1` plus `graphql` gives `https://host/graphql`, not
+> Endpoint resolution is `HttpClient`'s own, which treats a base address as a document rather than
+> a directory: `https://host/v1` plus `graphql` gives `https://host/graphql`, not
 > `https://host/v1/graphql`. Give the base address a trailing slash to keep its path.
 
-#### Naming the server's arguments
+#### Filtering
 
-The translator emits HotChocolate's argument names by default — `where`, `order`, `take`, `skip`,
-`first`, `last`. Schemas disagree: the public countries API calls its filter `filter`. Say so in
-the chain, and the rest of it is unchanged:
-
-```csharp
-await client.CreateQueryable<Country>()
-    .WithGraphQLArguments(new() { Filter = "filter" })
-    .Where(c => c.Continent.Name == "Europe")
-    .ToListAsync(ct);
-
-// query($v0: CountryFilterInput) { countries(filter: $v0) { … } }
-```
-
-Unset members keep their defaults, so renaming one argument costs one line. It composes anywhere
-in the chain and works over any `IQueryable<T>`, including one this library did not create.
-
-This changes what the arguments are *called*. What goes **inside** the filter — the operator
-names and nesting — is a separate concern, handled by `IFilterTranslationProvider`.
-
-#### Filtering with the server's filter shape
-
-A filter input is not always shaped like the thing it filters. The countries API returns
-`Country.continent` as an object with a `name`, but its `CountryFilterInput.continent` takes a
-string filter directly — so a predicate over the queried type lands a level too deep:
+`Where` is LINQ's, and lowers to the server's filter input. Two extra overloads live in
+`Feather.GraphQL.Linq.Filtering`, next to the lowering they configure:
 
 ```csharp
-.Where(c => c.Continent.Name == "Europe")   // {"continent":{"name":{"eq":"Europe"}}} — rejected
+using Feather.GraphQL.Linq.Filtering;
+
+// name the schema's filter argument inline — HotChocolate says "where", this schema says "filter"
+.Where("filter", p => p.Age > 30)
+
+// write the predicate against a model of the filter input, when it is not shaped like the result
+.Where((CountryFilter f) => f.Continent == "Europe")
+
+// or rename several arguments at once
+.WithGraphQLArguments(new() { Filter = "filter", Order = "sort" })
 ```
 
-Model the input as its own type and filter against that. The chain stays over the queried type,
-so `Select` and materialization are unaffected:
+That namespace is a deliberate opt-in: these are extensions on `IQueryable<T>`, and an
+auto-imported one would appear on every `DbSet` in a solution.
 
-```csharp
-public class CountryFilter
-{
-    public string? Continent { get; set; }
-}
-
-await client.CreateQueryable<Country>()
-    .WithGraphQLArguments(new() { Filter = "filter" })
-    .Where((CountryFilter f) => f.Continent == "Europe")   // {"continent":{"eq":"Europe"}}
-    .Select(c => new { c.Name, Continent = c.Continent.Name })
-    .ToArrayAsync(ct);
-```
-
-Note the explicitly-typed lambda parameter: `Where<CountryFilter>(…)` will not compile, because
-C# binds an explicit type argument to the extension's own type parameter first and would read it
-as the element type. `(CountryFilter f) => …` infers it instead — or name both types and leave
-the lambda bare, `Where<Country, CountryFilter>(f => …)`.
-
-For a simple query the argument name can ride along with the predicate, and there is no need to
-meet `WithGraphQLArguments` at all:
-
-```csharp
-await client.CreateQueryable<Country>()
-    .Where("filter", (CountryFilter f) => f.Continent == "Europe")
-    .Select(c => new { c.Name, Continent = c.Continent.Name })
-    .ToArrayAsync(ct);
-```
-
-That overload works over the queried type too, when only the argument's name differs from
-HotChocolate's:
-
-```csharp
-client.CreateQueryable<Person>().Where("filter", p => p.Age > 30);
-```
-
-Both spellings set the same thing, so the later call in the chain wins. Reach for
-`WithGraphQLArguments` when the sort or paging arguments are renamed as well.
-
-Field names on the filter type resolve the usual way — `[JsonPropertyName]`, then `[DataMember]`,
-then camel-cased — and the argument's GraphQL type name still comes from the queried type, since
-it belongs to the root field. A chain filters one way or the other; mixing both is FGQL020.
+> [!NOTE]
+> With it imported, passing a *prebuilt* `Expression<Func<T, bool>>` to `Where` is ambiguous with
+> LINQ's own overload. Write the lambda inline, or call `Queryable.Where(source, predicate)`.
+> Inline lambdas and the two-argument `Where(argumentName, predicate)` form are unaffected.
 
 Sync terminals (`ToList()`, `First()`, `foreach`) block on the request the way EF Core's do.
 The async counterparts — `ToListAsync`, `ToArrayAsync`, `FirstAsync`, `SingleAsync`, `AnyAsync`,
@@ -277,41 +248,39 @@ translation error rather than a silent full fetch — `Count()` on an un-paged f
 document so you can read what the query actually asks:
 
 ```csharp
-GraphQLQueryable.For<Person>().Where(p => p.Age > 30).OrderBy(p => p.Name).ToGraphQLQuery();
+GraphQLQueryable.For<Person>("people").Where(p => p.Age > 30).OrderBy(p => p.Name)
+    .ToGraphQLQuery();
 // query { people(where: {age: {gt: 30}}, order: [{name: ASC}]) { name age emailAddress } }
 ```
 
 That is the debugging form and pastes straight into a playground. What actually goes over the
 wire binds every argument to a variable — `people(where: $v0)` — which is what keeps one document,
-and therefore one APQ key, covering every predicate of a given shape. Reach for `ToQueryPlan()`
-when you want that document alongside the variables payload.
+and therefore one APQ key, covering every predicate of a given shape. That document reaches a
+custom transport through `IGraphQLQueryExecutor`, which is where an APQ hash belongs.
 
 Both are plain `string`s. The public API deals in strings, expressions and `IQueryable<T>`; there
 is no query wrapper type to learn.
 
 To run queries over something other than HTTP, implement `IGraphQLQueryExecutor` and hand it to
-`GraphQLQueryableSource`. It receives a `GraphQLQueryPlan` — the printed document, its variables,
-and the shape of the answer — and returns the response's `data` element:
+`GraphQLQueryable.For<T>`. It receives the parameterized document and its variables, and returns
+the response's `data` element — nothing about how the answer is shaped crosses that seam:
 
 ```csharp
 public sealed class MyExecutor : IGraphQLQueryExecutor
 {
     public IFilterTranslationProvider FilterProvider => HotChocolateFilterProvider.Instance;
 
-    public ValueTask<JsonElement> ExecuteAsync(GraphQLQueryPlan plan, CancellationToken ct) => …;
+    public ValueTask<JsonElement> ExecuteAsync(
+        string query, IReadOnlyDictionary<string, object?> variables, CancellationToken ct) => …;
 }
 
-IGraphQLQueryableSource source = new GraphQLQueryableSource(new MyExecutor());
+IQueryable<Country> countries = GraphQLQueryable.For<Country>(new MyExecutor(), "countries");
 ```
 
 Sync terminals (`ToList()`, `First()`, `foreach`) block on the request the way EF Core's do.
 The async counterparts — `ToListAsync`, `ToArrayAsync`, `FirstAsync`, `SingleAsync`, `AnyAsync`,
 `CountAsync`, `LastAsync` and `AsAsyncEnumerable` — take a `CancellationToken` and don't.
 
-Result operators are translated, not applied after the fact: `First()` asks for a page of one,
-`Any()` selects a single scalar, `Count()` reads the connection's `totalCount`, and `Last()`
-reads backwards with cursor paging's `last:`. Where a paging kind cannot express one, it is a
-translation error rather than a silent full fetch — `Count()` on an un-paged field is FGQL009.
 
 
 

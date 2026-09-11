@@ -4,7 +4,14 @@ using Feather.GraphQL.Primitives;
 
 namespace Feather.GraphQL.Converters;
 
-public class ErrorPathConverter : JsonConverter<ErrorPath>
+/// <summary>
+/// Reads an error's <c>path</c> array into <see cref="ErrorPath"/>.
+/// </summary>
+/// <remarks>
+/// Internal, and reachable only through <c>[JsonConverter]</c> on <see cref="ErrorPath"/> —
+/// which is enough, because the serializer instantiates it by reflection rather than by name.
+/// </remarks>
+internal sealed class ErrorPathConverter : JsonConverter<ErrorPath>
 {
 
     public override ErrorPath Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>

@@ -27,7 +27,6 @@
     <Using Include="NUnit.Framework" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Feather.GraphQL.Abstractions\Feather.GraphQL.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\Feather.GraphQL.Http\Feather.GraphQL.Http.csproj" />
   </ItemGroup>
 </Project>

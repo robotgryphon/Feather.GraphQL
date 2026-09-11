@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Abstractions for GraphQL.Client</Description>
+    <Description>Transport-neutral GraphQL primitives: the error model every transport reports through</Description>
     <RootNamespace>Feather.GraphQL</RootNamespace>
   </PropertyGroup>
   <ItemGroup>

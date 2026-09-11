@@ -5,9 +5,10 @@ using Feather.GraphQL.Http;
 using Feather.GraphQL.Http.Request;
 using Feather.GraphQL.Linq;
 using Feather.GraphQL.Linq.Providers;
+using Feather.GraphQL.Linq.Filtering;
 using Feather.GraphQL.Linq.Query;
 using Microsoft.Extensions.DependencyInjection;
-
+// ReSharper disable SuggestVarOrType_Elsewhere
 // ReSharper disable UseConfigureAwaitFalse
 
 var services = new ServiceCollection();
@@ -23,7 +24,7 @@ var client = serviceProvider
     .GetRequiredService<IHttpClientFactory>()
     .CreateClient("countries");
 
-var queryable = client.CreateQueryable<Country>()
+IQueryable<GeographyIsFun> queryable = client.CreateQueryable<Country>("countries")
     .Where("filter", (CountryFilter c) => c.Continent == "EU")
     .Select(c => new GeographyIsFun(c.Name, c.Continent));
 

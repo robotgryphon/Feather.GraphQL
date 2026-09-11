@@ -10,22 +10,28 @@ public class QueryRejectionTests
 
     [Test]
     public void Unbounded_query_is_FGQL012()
-        => Assert.That(ThrowsWith(() => GraphQLQueryable.For<Person>().ToGraphQLQuery()),
+        => Assert.That(ThrowsWith(() => Schema.People.ToGraphQLQuery()),
             Is.EqualTo("FGQL012"));
 
+    /// <summary>
+    /// A queryable from elsewhere carries no schema, so translating one without saying how it is
+    /// queried has nothing to ask for.
+    /// </summary>
     [Test]
-    public void Type_without_GenerateQueryable_is_FGQL011()
-        => Assert.That(ThrowsWith(() => GraphQLQueryable.For<Orphan>().Where(o => o.Name == "x").ToGraphQLQuery()),
+    public void A_query_with_no_root_field_is_FGQL011()
+        => Assert.That(ThrowsWith(() => Array.Empty<Orphan>().AsQueryable()
+                .Where(o => o.Name == "x")
+                .ToGraphQLQuery()),
             Is.EqualTo("FGQL011"));
 
     [Test]
     public void Skip_under_cursor_paging_is_FGQL008()
-        => Assert.That(ThrowsWith(() => GraphQLQueryable.For<CursorPerson>().Skip(5).ToGraphQLQuery()),
+        => Assert.That(ThrowsWith(() => Schema.Connected.Skip(5).ToGraphQLQuery()),
             Is.EqualTo("FGQL008"));
 
     [Test]
     public void Computation_in_a_projection_is_FGQL013()
-        => Assert.That(ThrowsWith(() => GraphQLQueryable.For<Person>()
+        => Assert.That(ThrowsWith(() => Schema.People
                 .Where(p => p.Age > 1)
                 .Select(p => new { Shouted = p.Name.ToUpperInvariant() })
                 .ToGraphQLQuery()),
@@ -37,7 +43,7 @@ public class QueryRejectionTests
     /// </summary>
     [Test]
     public void A_nested_field_is_left_out_of_the_automatic_selection()
-        => Assert.That(GraphQLQueryable.For<Author>().Where(a => a.Name == "x").ToGraphQLQuery(),
+        => Assert.That(Schema.Authors.Where(a => a.Name == "x").ToGraphQLQuery(),
             Is.EqualTo("""query { authors(where: {name: {eq: "x"}}) { name } }"""));
 
     /// <summary>
@@ -46,11 +52,11 @@ public class QueryRejectionTests
     /// </summary>
     [Test]
     public void A_terminal_without_an_endpoint_is_FGQL016()
-        => Assert.That(ThrowsWith(() => GraphQLQueryable.For<Person>().Where(p => p.Age > 1).First()),
+        => Assert.That(ThrowsWith(() => Schema.People.Where(p => p.Age > 1).First()),
             Is.EqualTo("FGQL016"));
 
     [Test]
     public void Enumerating_without_an_endpoint_is_FGQL016()
-        => Assert.That(ThrowsWith(() => GraphQLQueryable.For<Person>().Where(p => p.Age > 1).ToList()),
+        => Assert.That(ThrowsWith(() => Schema.People.Where(p => p.Age > 1).ToList()),
             Is.EqualTo("FGQL016"));
 }

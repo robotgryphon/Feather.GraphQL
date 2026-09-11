@@ -1,10 +1,31 @@
+using Feather.GraphQL.Linq.Filtering;
+using Feather.GraphQL.Linq.Query;
 using System.Text.Json.Serialization;
-using Feather.GraphQL.Linq;
 
 namespace Feather.GraphQL.Linq.Tests.Query;
 
-[GenerateQueryable("people", FilterInput = "PersonFilterInput", SortInput = "PersonSortInput")]
-public partial class Person
+/// <summary>
+/// How each model is queried. The types are plain POCOs; what the schema calls them lives here,
+/// next to the tests that use it.
+/// </summary>
+internal static class Schema
+{
+    public static IQueryable<Person> People => GraphQLQueryable.For<Person>("people");
+
+    public static IQueryable<CursorPerson> Connected => GraphQLQueryable.For<CursorPerson>(
+        "connected", o => { o.Paging = PagingKind.Cursor; o.FilterInput = "PersonFilterInput"; });
+
+    public static IQueryable<OffsetPerson> Offset => GraphQLQueryable.For<OffsetPerson>(
+        "offset", o => { o.Paging = PagingKind.Offset; o.FilterInput = "PersonFilterInput"; });
+
+    public static IQueryable<Author> Authors => GraphQLQueryable.For<Author>("authors");
+
+    public static IQueryable<Country> Countries => GraphQLQueryable.For<Country>("countries");
+
+    public static IQueryable<Gadget> Gadgets => GraphQLQueryable.For<Gadget>("gadgets");
+}
+
+public class Person
 {
     public required string Name { get; init; }
     public int Age { get; init; }
@@ -16,21 +37,18 @@ public partial class Person
     public string Secret { get; init; } = "";
 }
 
-[GenerateQueryable("connected", Paging = PagingKind.Cursor, FilterInput = "PersonFilterInput")]
-public partial class CursorPerson
+public class CursorPerson
 {
     public required string Name { get; init; }
 }
 
-[GenerateQueryable("offset", Paging = PagingKind.Offset, FilterInput = "PersonFilterInput")]
-public partial class OffsetPerson
+public class OffsetPerson
 {
     public required string Name { get; init; }
 }
 
 /// <summary>Carries a nested field, so it cannot use the no-Select default.</summary>
-[GenerateQueryable("authors", FilterInput = "AuthorFilterInput")]
-public partial class Author
+public class Author
 {
     public required string Name { get; init; }
     public List<Book> Books { get; init; } = [];
@@ -42,7 +60,7 @@ public class Book
     public int Pages { get; init; }
 }
 
-/// <summary>No [GenerateQueryable]: filterable, but not a query root.</summary>
+/// <summary>Never given a root field, so translating a query over it is FGQL011.</summary>
 public class Orphan
 {
     public required string Name { get; init; }
@@ -51,8 +69,7 @@ public class Orphan
 /// <summary>
 /// Nests its continent, the way the countries API's <c>Country</c> does.
 /// </summary>
-[GenerateQueryable("countries", FilterInput = "CountryFilterInput")]
-public partial class Country
+public class Country
 {
     public required string Name { get; init; }
     public required CountryContinent Continent { get; init; }
@@ -79,8 +96,7 @@ public class CountryFilter
 /// Shaped like the Pokémon API's <c>pokemon</c>: an object member, a scalar list, and a member
 /// that nests a level further into collections of objects.
 /// </summary>
-[GenerateQueryable("gadgets", FilterInput = "GadgetFilterInput")]
-public partial class Gadget
+public class Gadget
 {
     public required string Name { get; init; }
     public Dimensions? Size { get; init; }

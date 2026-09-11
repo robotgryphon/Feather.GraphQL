@@ -1,3 +1,4 @@
+using Feather.GraphQL.Linq.Filtering;
 using Feather.GraphQL.Linq.Query;
 
 namespace Feather.GraphQL.Linq.Tests.Query;
@@ -12,7 +13,7 @@ public class InlineQueryTests
 {
     [Test]
     public void The_filter_is_written_into_the_document()
-        => Assert.That(GraphQLQueryable.For<Person>()
+        => Assert.That(Schema.People
                 .Where(p => p.Name == "John")
                 .ToGraphQLQuery(),
             Is.EqualTo("""query { people(where: {name: {eq: "John"}}) { name age emailAddress } }"""));
@@ -20,14 +21,14 @@ public class InlineQueryTests
     /// <summary>No variables are referenced, so none are declared.</summary>
     [Test]
     public void No_variable_declarations_survive()
-        => Assert.That(GraphQLQueryable.For<Person>()
+        => Assert.That(Schema.People
                 .Where(p => p.Name == "John")
                 .ToGraphQLQuery(),
             Does.Not.Contain("$v").And.Not.Contains("PersonFilterInput"));
 
     [Test]
     public void Numbers_and_booleans_print_unquoted()
-        => Assert.That(GraphQLQueryable.For<Person>()
+        => Assert.That(Schema.People
                 .Where(p => p.Age > 30)
                 .Take(5)
                 .ToGraphQLQuery(),
@@ -40,7 +41,7 @@ public class InlineQueryTests
     /// </summary>
     [Test]
     public void Enum_values_print_as_bare_names()
-        => Assert.That(GraphQLQueryable.For<Person>()
+        => Assert.That(Schema.People
                 .Where(p => p.Age > 30)
                 .OrderBy(p => p.Name)
                 .ToGraphQLQuery(),
@@ -49,14 +50,14 @@ public class InlineQueryTests
 
     [Test]
     public void Object_keys_print_unquoted()
-        => Assert.That(GraphQLQueryable.For<Person>()
+        => Assert.That(Schema.People
                 .Where(p => p.Age > 30 && p.Name != "Jane")
                 .ToGraphQLQuery(),
             Does.Contain("{age: {gt: 30}, name: {neq: \"Jane\"}}"));
 
     [Test]
     public void Strings_keep_JSON_escaping()
-        => Assert.That(GraphQLQueryable.For<Person>()
+        => Assert.That(Schema.People
                 .Where(p => p.Name == "say \"hi\"")
                 .ToGraphQLQuery(),
             Does.Contain("""
@@ -65,21 +66,21 @@ public class InlineQueryTests
 
     [Test]
     public void Lists_print_as_lists()
-        => Assert.That(GraphQLQueryable.For<Person>()
+        => Assert.That(Schema.People
                 .Where(p => new[] { "Ada", "Grace" }.Contains(p.Name))
                 .ToGraphQLQuery(),
             Does.Contain("""{name: {in: ["Ada", "Grace"]}}"""));
 
     [Test]
     public void The_paging_wrapper_and_selection_are_unchanged()
-        => Assert.That(GraphQLQueryable.For<CursorPerson>()
+        => Assert.That(Schema.Connected
                 .Take(10)
                 .ToGraphQLQuery(),
             Is.EqualTo("query { connected(first: 10) { nodes { name } } }"));
 
     [Test]
     public void Renamed_arguments_are_honoured()
-        => Assert.That(GraphQLQueryable.For<Person>()
+        => Assert.That(Schema.People
                 .Where("filter", p => p.Age > 30)
                 .ToGraphQLQuery(),
             Does.Contain("people(filter: {age: {gt: 30}})"));
@@ -91,7 +92,7 @@ public class InlineQueryTests
     [Test]
     public void The_sent_document_is_still_parameterized()
     {
-        var query = GraphQLQueryable.For<Person>().Where(p => p.Name == "John");
+        var query = Schema.People.Where(p => p.Name == "John");
 
         Assert.Multiple(() =>
         {

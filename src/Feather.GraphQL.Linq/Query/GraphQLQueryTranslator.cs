@@ -16,7 +16,7 @@ namespace Feather.GraphQL.Linq.Query;
 /// asks the server for a page of one rather than fetching everything and discarding the tail,
 /// and <c>Count()</c> asks for <c>totalCount</c> rather than for rows at all.
 /// </remarks>
-internal sealed class GraphQLQueryTranslator(IFilterTranslationProvider provider)
+internal sealed class GraphQLQueryTranslator(GraphQLQueryOptions options)
 {
     /// <summary>Translates a chain into the request to send and the shape of its answer.</summary>
     public GraphQLQueryPlan Translate(Expression expression)
@@ -47,14 +47,14 @@ internal sealed class GraphQLQueryTranslator(IFilterTranslationProvider provider
         Expression expression)
     {
         var chain = QueryChain.Parse(expression);
-        var metadata = ReflectionTypeMetadata.For(chain.ElementType);
 
-        if (metadata.RootField is not { Length: > 0 } rootField)
+        if (options.RootField is not { Length: > 0 } rootField)
             throw new GraphQLTranslationException("FGQL011",
-                $"'{chain.ElementType.Name}' has no [GenerateQueryable] attribute, so there is no "
-                + "root field to query.");
+                $"No root field was given for '{chain.ElementType.Name}'. Name the field it is "
+                + "queried through — CreateQueryable<T>(\"people\") — so the query has something "
+                + "to ask for.");
 
-        ApplyResultOperator(chain, metadata, rootField);
+        ApplyResultOperator(chain, options, rootField);
 
         // A count asks for a single number, so "this would fetch every record" does not apply.
         if (!chain.IsCount && !chain.HasFilter && !chain.HasPaging && chain.Projection is null)
@@ -62,12 +62,12 @@ internal sealed class GraphQLQueryTranslator(IFilterTranslationProvider provider
                 $"A query over '{chain.ElementType.Name}' with no Where, Take or Select would "
                 + "request every record. Add one of them.");
 
-        if (chain.Skip.HasValue && metadata.Paging == PagingKind.Cursor)
+        if (chain.Skip.HasValue && options.Paging == PagingKind.Cursor)
             throw new GraphQLTranslationException("FGQL008",
                 $"'{rootField}' uses cursor paging, which has no offset to Skip to. Use Take with "
                 + "a cursor argument instead.");
 
-        var filter = new FilterTranslator(provider);
+        var filter = new FilterTranslator(options.FilterProvider ?? HotChocolateFilterProvider.Instance);
         var variables = new List<GqlVariableDefinition>();
         var arguments = new List<GqlArgument>();
 
@@ -75,14 +75,14 @@ internal sealed class GraphQLQueryTranslator(IFilterTranslationProvider provider
         var names = chain.Arguments;
 
         if (filter.Translate(chain.MergedPredicate()) is { } where)
-            Bind(variables, arguments, names.Filter, metadata.FilterInputName, where);
+            Bind(variables, arguments, names.Filter, options.FilterInputOr(chain.ElementType), where);
 
         if (filter.TranslateOrdering(chain.Ordering) is { } order)
-            Bind(variables, arguments, names.Order, $"[{metadata.SortInputName}!]", order);
+            Bind(variables, arguments, names.Order, $"[{options.SortInputOr(chain.ElementType)}!]", order);
 
         if (chain.Take is { } take)
             Bind(variables, arguments,
-                metadata.Paging == PagingKind.Cursor ? names.First : names.Take, "Int", take);
+                options.Paging == PagingKind.Cursor ? names.First : names.Take, "Int", take);
 
         if (chain.Skip is { } skip)
             Bind(variables, arguments, names.Skip, "Int", skip);
@@ -94,17 +94,17 @@ internal sealed class GraphQLQueryTranslator(IFilterTranslationProvider provider
         var root = new GqlField(rootField)
         {
             Arguments = arguments,
-            Selection = BuildSelection(chain, metadata)
+            Selection = BuildSelection(chain, options)
         };
 
-        return (new GqlDocument(variables, root), chain, rootField, metadata.Paging);
+        return (new GqlDocument(variables, root), chain, rootField, options.Paging);
     }
 
     /// <summary>
     /// Turns the terminal operator into server-side arguments, so the reduction happens over a
     /// page the server already narrowed rather than over everything it could have sent.
     /// </summary>
-    private static void ApplyResultOperator(QueryChain chain, IGraphQLTypeMetadata metadata, string rootField)
+    private static void ApplyResultOperator(QueryChain chain, GraphQLQueryOptions options, string rootField)
     {
         switch (chain.ResultOperator)
         {
@@ -126,7 +126,7 @@ internal sealed class GraphQLQueryTranslator(IFilterTranslationProvider provider
 
             case QueryResultOperator.Last:
             case QueryResultOperator.LastOrDefault:
-                if (metadata.Paging != PagingKind.Cursor)
+                if (options.Paging != PagingKind.Cursor)
                     throw new GraphQLTranslationException("FGQL015",
                         $"Last() over '{rootField}' needs cursor paging — only a connection can read "
                         + "backwards with 'last:'. Order the query descending and use First() instead.");
@@ -137,7 +137,7 @@ internal sealed class GraphQLQueryTranslator(IFilterTranslationProvider provider
 
             case QueryResultOperator.Count:
             case QueryResultOperator.LongCount:
-                if (metadata.Paging == PagingKind.None)
+                if (options.Paging == PagingKind.None)
                     throw new GraphQLTranslationException("FGQL009",
                         $"Count() over '{rootField}' needs a paged root field — an un-paged field has "
                         + "no 'totalCount' to ask for, and counting client-side would fetch every record.");
@@ -158,31 +158,31 @@ internal sealed class GraphQLQueryTranslator(IFilterTranslationProvider provider
     /// What to ask for: a count asks the wrapper for <c>totalCount</c>, an existence check asks
     /// for the cheapest single scalar, and everything else asks for the projection.
     /// </summary>
-    private static IReadOnlyList<GqlField> BuildSelection(QueryChain chain, IGraphQLTypeMetadata metadata)
+    private static IReadOnlyList<GqlField> BuildSelection(QueryChain chain, GraphQLQueryOptions options)
     {
         if (chain.IsCount)
             return [new GqlField("totalCount")];
 
         if (chain.ResultOperator is QueryResultOperator.Any)
-            return Wrap(metadata.Paging, [new GqlField(CheapestScalar(metadata))]);
+            return Wrap(options.Paging, [new GqlField(CheapestScalar(chain.ElementType))]);
 
-        return Wrap(metadata.Paging, SelectionSetBuilder.Build(chain.ElementType, chain.Projection));
+        return Wrap(options.Paging, SelectionSetBuilder.Build(chain.ElementType, chain.Projection));
     }
 
     /// <summary>
     /// A selection set cannot be empty, so an existence check still has to name a field. It picks
     /// one scalar rather than the type's full projection — <c>Any()</c> discards the value.
     /// </summary>
-    private static string CheapestScalar(IGraphQLTypeMetadata metadata)
+    private static string CheapestScalar(Type elementType)
     {
-        foreach (var field in metadata.Fields)
+        foreach (var field in ReflectionTypeMetadata.For(elementType).Fields)
         {
             if (!field.IsIgnored && SelectionSetBuilder.IsScalar(field.ClrType))
                 return field.FieldName;
         }
 
         throw new GraphQLTranslationException("FGQL014",
-            $"'{metadata.ClrType.Name}' has no scalar field, so Any() has nothing to select.");
+            $"'{elementType.Name}' has no scalar field, so Any() has nothing to select.");
     }
 
     /// <summary>

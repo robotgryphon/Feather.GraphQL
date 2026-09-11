@@ -1,3 +1,4 @@
+using Feather.GraphQL.Linq.Filtering;
 using Feather.GraphQL.Linq.Query;
 using Feather.GraphQL.Linq.Tests.Query;
 
@@ -16,9 +17,9 @@ public class ResultOperatorTests
     [Test]
     public void First_asks_the_server_for_one_row()
     {
-        var (source, executor) = StubExecutor.Returning("""{"people":[{"name":"Ada"}]}""");
+        var executor = StubExecutor.Returning("""{"people":[{"name":"Ada"}]}""");
 
-        var person = source.Queryable<Person>().Where(p => p.Age > 30).First();
+        var person = executor.Queryable<Person>("people").Where(p => p.Age > 30).First();
 
         Assert.Multiple(() =>
         {
@@ -34,9 +35,9 @@ public class ResultOperatorTests
     [Test]
     public void First_with_a_predicate_folds_it_into_the_filter()
     {
-        var (source, executor) = StubExecutor.Returning("""{"people":[{"name":"Ada"}]}""");
+        var executor = StubExecutor.Returning("""{"people":[{"name":"Ada"}]}""");
 
-        source.Queryable<Person>().First(p => p.Name == "Ada");
+        executor.Queryable<Person>("people").First(p => p.Name == "Ada");
 
         Assert.That(executor.Variables, Does.Contain("""{"name":{"eq":"Ada"}}"""));
     }
@@ -44,18 +45,18 @@ public class ResultOperatorTests
     [Test]
     public void First_over_nothing_throws()
     {
-        var (source, executor) = StubExecutor.Returning("""{"people":[]}""");
+        var executor = StubExecutor.Returning("""{"people":[]}""");
 
         Assert.Throws<InvalidOperationException>(
-            () => source.Queryable<Person>().Where(p => p.Age > 30).First());
+            () => executor.Queryable<Person>("people").Where(p => p.Age > 30).First());
     }
 
     [Test]
     public void FirstOrDefault_over_nothing_is_null()
     {
-        var (source, executor) = StubExecutor.Returning("""{"people":[]}""");
+        var executor = StubExecutor.Returning("""{"people":[]}""");
 
-        Assert.That(source.Queryable<Person>().Where(p => p.Age > 30).FirstOrDefault(),
+        Assert.That(executor.Queryable<Person>("people").Where(p => p.Age > 30).FirstOrDefault(),
             Is.Null);
     }
 
@@ -63,11 +64,11 @@ public class ResultOperatorTests
     [Test]
     public void Single_asks_for_two_rows_to_detect_ambiguity()
     {
-        var (source, executor) = StubExecutor.Returning(
+        var executor = StubExecutor.Returning(
             """{"people":[{"name":"Ada"},{"name":"Grace"}]}""");
 
         var exception = Assert.Throws<InvalidOperationException>(
-            () => source.Queryable<Person>().Where(p => p.Age > 30).Single());
+            () => executor.Queryable<Person>("people").Where(p => p.Age > 30).Single());
 
         Assert.Multiple(() =>
         {
@@ -81,9 +82,9 @@ public class ResultOperatorTests
     [Test]
     public void Single_returns_the_only_row()
     {
-        var (source, executor) = StubExecutor.Returning("""{"people":[{"name":"Ada"}]}""");
+        var executor = StubExecutor.Returning("""{"people":[{"name":"Ada"}]}""");
 
-        Assert.That(source.Queryable<Person>().Where(p => p.Age > 30).Single().Name,
+        Assert.That(executor.Queryable<Person>("people").Where(p => p.Age > 30).Single().Name,
             Is.EqualTo("Ada"));
     }
 
@@ -91,9 +92,9 @@ public class ResultOperatorTests
     [Test]
     public void Any_selects_a_single_cheap_field()
     {
-        var (source, executor) = StubExecutor.Returning("""{"people":[{"name":"Ada"}]}""");
+        var executor = StubExecutor.Returning("""{"people":[{"name":"Ada"}]}""");
 
-        bool any = source.Queryable<Person>().Where(p => p.Age > 30).Any();
+        bool any = executor.Queryable<Person>("people").Where(p => p.Age > 30).Any();
 
         Assert.Multiple(() =>
         {
@@ -105,17 +106,17 @@ public class ResultOperatorTests
     [Test]
     public void Any_over_nothing_is_false()
     {
-        var (source, executor) = StubExecutor.Returning("""{"people":[]}""");
+        var executor = StubExecutor.Returning("""{"people":[]}""");
 
-        Assert.That(source.Queryable<Person>().Where(p => p.Age > 30).Any(), Is.False);
+        Assert.That(executor.Queryable<Person>("people").Where(p => p.Age > 30).Any(), Is.False);
     }
 
     [Test]
     public void Count_asks_the_connection_for_totalCount()
     {
-        var (source, executor) = StubExecutor.Returning("""{"connected":{"totalCount":42}}""");
+        var executor = StubExecutor.Returning("""{"connected":{"totalCount":42}}""");
 
-        int count = source.Queryable<CursorPerson>().Count();
+        int count = executor.Queryable<CursorPerson>("connected", o => o.Paging = PagingKind.Cursor).Count();
 
         Assert.Multiple(() =>
         {
@@ -127,17 +128,17 @@ public class ResultOperatorTests
     [Test]
     public void Count_over_offset_paging_also_reads_totalCount()
     {
-        var (source, executor) = StubExecutor.Returning("""{"offset":{"totalCount":7}}""");
+        var executor = StubExecutor.Returning("""{"offset":{"totalCount":7}}""");
 
-        Assert.That(source.Queryable<OffsetPerson>().Count(), Is.EqualTo(7));
+        Assert.That(executor.Queryable<OffsetPerson>("offset", o => o.Paging = PagingKind.Offset).Count(), Is.EqualTo(7));
     }
 
     [Test]
     public void Count_over_an_unpaged_root_field_is_FGQL009()
     {
-        var (source, executor) = StubExecutor.Returning("""{"people":[]}""");
+        var executor = StubExecutor.Returning("""{"people":[]}""");
 
-        Assert.That(ThrowsWith(() => source.Queryable<Person>().Count()),
+        Assert.That(ThrowsWith(() => executor.Queryable<Person>("people").Count()),
             Is.EqualTo("FGQL009"));
     }
 
@@ -145,18 +146,18 @@ public class ResultOperatorTests
     [Test]
     public void Count_after_paging_is_FGQL009()
     {
-        var (source, executor) = StubExecutor.Returning("""{"connected":{"totalCount":1}}""");
+        var executor = StubExecutor.Returning("""{"connected":{"totalCount":1}}""");
 
-        Assert.That(ThrowsWith(() => source.Queryable<CursorPerson>().Take(5).Count()),
+        Assert.That(ThrowsWith(() => executor.Queryable<CursorPerson>("connected", o => o.Paging = PagingKind.Cursor).Take(5).Count()),
             Is.EqualTo("FGQL009"));
     }
 
     [Test]
     public void Count_without_totalCount_on_the_connection_is_FGQL009()
     {
-        var (source, executor) = StubExecutor.Returning("""{"connected":{"nodes":[]}}""");
+        var executor = StubExecutor.Returning("""{"connected":{"nodes":[]}}""");
 
-        Assert.That(ThrowsWith(() => source.Queryable<CursorPerson>().Count()),
+        Assert.That(ThrowsWith(() => executor.Queryable<CursorPerson>("connected", o => o.Paging = PagingKind.Cursor).Count()),
             Is.EqualTo("FGQL009"));
     }
 
@@ -164,9 +165,9 @@ public class ResultOperatorTests
     [Test]
     public void Last_over_cursor_paging_reads_backwards()
     {
-        var (source, executor) = StubExecutor.Returning("""{"connected":{"nodes":[{"name":"Zoe"}]}}""");
+        var executor = StubExecutor.Returning("""{"connected":{"nodes":[{"name":"Zoe"}]}}""");
 
-        var person = source.Queryable<CursorPerson>().Last();
+        var person = executor.Queryable<CursorPerson>("connected", o => o.Paging = PagingKind.Cursor).Last();
 
         Assert.Multiple(() =>
         {
@@ -178,9 +179,9 @@ public class ResultOperatorTests
     [Test]
     public void Last_without_cursor_paging_is_FGQL015()
     {
-        var (source, executor) = StubExecutor.Returning("""{"offset":{"items":[]}}""");
+        var executor = StubExecutor.Returning("""{"offset":{"items":[]}}""");
 
-        Assert.That(ThrowsWith(() => source.Queryable<OffsetPerson>().Last()),
+        Assert.That(ThrowsWith(() => executor.Queryable<OffsetPerson>("offset", o => o.Paging = PagingKind.Offset).Last()),
             Is.EqualTo("FGQL015"));
     }
 
@@ -188,9 +189,9 @@ public class ResultOperatorTests
     [Test]
     public void The_backwards_read_can_be_renamed()
     {
-        var (source, executor) = StubExecutor.Returning("""{"connected":{"nodes":[{"name":"Zoe"}]}}""");
+        var executor = StubExecutor.Returning("""{"connected":{"nodes":[{"name":"Zoe"}]}}""");
 
-        source.Queryable<CursorPerson>().WithGraphQLArguments(new() { Last = "tail" }).Last();
+        executor.Queryable<CursorPerson>("connected", o => o.Paging = PagingKind.Cursor).WithGraphQLArguments(new() { Last = "tail" }).Last();
 
         Assert.That(executor.Document, Does.Contain("{ connected(tail: $v0) { nodes { name } } }"));
     }
@@ -198,9 +199,9 @@ public class ResultOperatorTests
     [Test]
     public async Task Async_result_operators_translate_identically()
     {
-        var (source, executor) = StubExecutor.Returning("""{"connected":{"totalCount":42}}""");
+        var executor = StubExecutor.Returning("""{"connected":{"totalCount":42}}""");
 
-        Assert.That(await source.Queryable<CursorPerson>().CountAsync(), Is.EqualTo(42));
+        Assert.That(await executor.Queryable<CursorPerson>("connected", o => o.Paging = PagingKind.Cursor).CountAsync(), Is.EqualTo(42));
         Assert.That(executor.Document, Does.Contain("{ connected { totalCount } }"));
     }
 }

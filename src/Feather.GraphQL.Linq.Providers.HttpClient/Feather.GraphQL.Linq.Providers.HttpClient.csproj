@@ -11,6 +11,8 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
     </PackageReference>
     <PackageReference Include="JetBrains.Annotations" />
+    <!-- For the IOptions<T> overloads only; the delegate and instance forms need nothing. -->
+    <PackageReference Include="Microsoft.Extensions.Options" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Feather.GraphQL.Linq.Providers.HttpClient.Tests" />

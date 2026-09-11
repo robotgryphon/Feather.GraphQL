@@ -1,6 +1,6 @@
 using JetBrains.Annotations;
 
-namespace Feather.GraphQL.Linq.Query;
+namespace Feather.GraphQL.Linq.Filtering;
 
 /// <summary>
 /// What the server calls the arguments a chain translates to.
@@ -13,7 +13,7 @@ namespace Feather.GraphQL.Linq.Query;
 /// </para>
 /// <para>
 /// Only the names change. What goes <em>inside</em> the filter is a different question, answered
-/// by <see cref="Filtering.IFilterTranslationProvider"/>.
+/// by <see cref="IFilterTranslationProvider"/>.
 /// </para>
 /// </remarks>
 [PublicAPI]
