@@ -7,7 +7,7 @@ namespace Feather.GraphQL.Linq.Filtering;
 /// <remarks>
 /// v1 ships only <see cref="HotChocolateFilterProvider"/>. The interface exists so that adding a
 /// second dialect is a new implementation rather than a redesign — and so the public API can
-/// stay named <c>ToGraphQLFilter</c> rather than baking a vendor into it.
+/// name a dialect rather than a vendor.
 /// </remarks>
 public interface IFilterTranslationProvider
 {

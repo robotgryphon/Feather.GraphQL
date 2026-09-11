@@ -28,10 +28,39 @@ internal sealed class ChainFacts
     public ITypeSymbol ElementType = null!;
     public LambdaExpressionSyntax? Projection;
     public bool HasFilter;
+
+    /// <summary>
+    /// Every predicate the chain applied, in the order it applied them.
+    /// </summary>
+    /// <remarks>
+    /// Kept because the filter's <em>shape</em> is compile-time knowledge even though its values
+    /// are not: which fields, which operations, how they nest. Only the leaves have to wait for
+    /// the expression tree. A predicate this cannot see is simply absent, and the chain falls
+    /// back to being lowered whole at runtime.
+    /// </remarks>
+    public readonly List<LambdaExpressionSyntax> Predicates = [];
+
+    /// <summary>True when a Where was applied whose predicate could not be captured.</summary>
+    /// <remarks>
+    /// A filter-shape overload, or a predicate that is not a lambda written at the call site.
+    /// The document is still printable — it says only that a filter exists — but its payload is
+    /// not, so anything reading <see cref="Predicates"/> has to decline.
+    /// </remarks>
+    public bool HasOpaquePredicate;
     public bool HasOrdering;
     public bool HasSkip;
     public bool HasTake;
     public bool HasLast;
+
+    /// <summary>Whether the chain asked for a page itself, rather than a terminal asking for one.</summary>
+    /// <remarks>
+    /// The difference is whether the page's size is knowable here. <c>Take(n)</c> binds whatever
+    /// <c>n</c> turns out to be; <c>First()</c> binds one, always, and the compiler can say so.
+    /// </remarks>
+    public bool ExplicitTake;
+
+    /// <summary>The page size a terminal asked the server for, when one did.</summary>
+    public int? ResultPage;
     public ResultKind Result = ResultKind.Sequence;
     public Paging Paging;
     public string? FilterInput;
@@ -239,6 +268,7 @@ internal static class QueryChainReader
             }
 
             facts.HasFilter = true;
+            facts.HasOpaquePredicate = true;
             return Step.Applied;
         }
 
@@ -249,6 +279,7 @@ internal static class QueryChainReader
         {
             case "Where":
                 facts.HasFilter = true;
+                Predicate(facts, call);
                 return Step.Applied;
 
             case "OrderBy":
@@ -290,6 +321,19 @@ internal static class QueryChainReader
         }
     }
 
+    /// <summary>Captures a Where's predicate, or notes that it could not be.</summary>
+    private static void Predicate(ChainFacts facts, InvocationExpressionSyntax call)
+    {
+        if (call.ArgumentList.Arguments.Count == 1
+            && call.ArgumentList.Arguments[0].Expression is LambdaExpressionSyntax lambda)
+        {
+            facts.Predicates.Add(lambda);
+            return;
+        }
+
+        facts.HasOpaquePredicate = true;
+    }
+
     /// <summary>
     /// Records a terminal operator, folding its optional predicate overload into the chain's
     /// filter exactly as <c>First(p =&gt; …)</c> means <c>Where(…).First()</c>.
@@ -299,8 +343,19 @@ internal static class QueryChainReader
         if (facts.Result != ResultKind.Sequence)
             return Step.Decline;
 
+        // `First(p => …)` means `Where(…).First()`, so its predicate is part of the filter.
         if (call.ArgumentList.Arguments.Count > 0)
+        {
             facts.HasFilter = true;
+
+            foreach (var argument in call.ArgumentList.Arguments)
+            {
+                if (argument.Expression is LambdaExpressionSyntax lambda)
+                    facts.Predicates.Add(lambda);
+                else
+                    facts.HasOpaquePredicate = true;
+            }
+        }
 
         facts.Result = kind;
         return Step.Applied;
@@ -392,8 +447,11 @@ internal static class QueryChainReader
         // The predicate overloads take one before the cancellation token, and mean Where.
         foreach (var argument in call.ArgumentList.Arguments)
         {
-            if (argument.Expression is LambdaExpressionSyntax)
-                facts.HasFilter = true;
+            if (argument.Expression is not LambdaExpressionSyntax lambda)
+                continue;
+
+            facts.HasFilter = true;
+            facts.Predicates.Add(lambda);
         }
 
         facts.Result = result;

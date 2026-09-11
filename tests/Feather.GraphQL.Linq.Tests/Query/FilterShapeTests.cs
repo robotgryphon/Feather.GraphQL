@@ -13,8 +13,7 @@ public class FilterShapeTests
     private static string ThrowsWith(TestDelegate action)
         => Assert.Throws<GraphQLTranslationException>(action)!.DiagnosticId;
 
-    private static string Variables(GraphQLQueryPlan plan)
-        => System.Text.Json.JsonSerializer.Serialize(plan.Variables);
+    private static string Variables(GraphQLQueryPlan plan) => VariablePayload.Of(plan);
 
     /// <summary>
     /// The whole point: the queried type nests, the filter input does not, and the predicate

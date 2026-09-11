@@ -22,13 +22,15 @@ namespace Feather.GraphQL.Http.Request;
 /// </remarks>
 /// <param name="Query">The query text. Required; everything else is optional.</param>
 /// <param name="Variables">
-/// The values the document's variables take. The LINQ integration builds these as
-/// <c>JsonNode</c>s, which <see cref="GraphQLRequestWriter"/> writes without a serializer.
+/// The values the document's variables take, as something that writes itself. It was an
+/// <c>IReadOnlyDictionary&lt;string, object?&gt;</c>, which cost a dictionary per request, a box
+/// per value, and a type switch per value on the way out — none of it telling the writer
+/// anything the translator had not already decided.
 /// </param>
 /// <param name="OperationName">Which operation to run, for a document declaring more than one.</param>
 /// <param name="Extensions">Anything a server understands beyond the specification.</param>
 internal sealed record GraphQLRequest(
     [property: StringSyntax("GraphQL")] string Query,
-    IReadOnlyDictionary<string, object?>? Variables = null,
+    IGraphQLVariables? Variables = null,
     string? OperationName = null,
     IReadOnlyDictionary<string, object?>? Extensions = null);

@@ -91,6 +91,11 @@ intent. Both classes that care about this control for it explicitly:
 - `QueryPipeline` runs both: `Composed at runtime` behind that same helper, `Precompiled
   document` written inline at its terminal. The two chains are otherwise identical, so the gap
   between them is what precompilation is worth.
+- It runs a second pair for the same reason at one level deeper. Those two chains bind nothing,
+  so the inline one gets its whole *plan* at build time and not just its document — root field,
+  paging, terminal and projection included. The gap between `Projected: composed at runtime` and
+  `Projected: precompiled plan` is what that is worth, and it is much the larger of the two
+  because the chain is never walked at all.
 
 To check which chains were precompiled in a given build:
 

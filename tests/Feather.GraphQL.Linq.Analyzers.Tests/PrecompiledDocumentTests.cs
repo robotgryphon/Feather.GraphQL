@@ -301,6 +301,36 @@ public class PrecompiledDocumentTests
     }
 
     /// <summary>
+    /// A chain that binds nothing gets its whole plan, not just its document — there is nothing
+    /// left for the runtime to learn by walking it.
+    /// </summary>
+    [TestCase("""client.CreateQueryable<Country>("countries").ToArray()""")]
+    [TestCase("""client.CreateQueryable<Country>("countries").Select(c => new { c.Name }).ToArray()""")]
+    [TestCase("""client.CreateQueryable<Country>("countries").First()""")]
+    [TestCase("""client.CreateQueryable<Country>("countries").Select(c => c.Name).Single()""")]
+    public void A_chain_that_binds_nothing_is_handed_a_plan(string chain)
+        => Assert.That(Handover(chain), Is.EqualTo("AttachPlan"));
+
+    /// <summary>
+    /// A predicate's shape is compile-time knowledge even though its values are not, so a chain
+    /// that only binds a filter is handed a plan too — with the filter printed and its values
+    /// left open.
+    /// </summary>
+    [TestCase("""client.CreateQueryable<Country>("countries").Where(c => c.Name == "x").ToArray()""")]
+    [TestCase("""client.CreateQueryable<Country>("countries").Where(c => c.Continent.Name == "x").ToArray()""")]
+    public void A_chain_binding_only_a_printable_filter_is_handed_a_plan(string chain)
+        => Assert.That(Handover(chain), Is.EqualTo("AttachPlan"));
+
+    /// <summary>
+    /// A chain that binds a value gets the document only. The value is in the expression tree and
+    /// nowhere else, so the tree still has to be walked for it.
+    /// </summary>
+    [TestCase("""client.CreateQueryable<Country>("countries").Take(5).ToArray()""")]
+    [TestCase("""client.CreateQueryable<Country>("countries").OrderBy(c => c.Name).ToArray()""")]
+    public void A_chain_that_binds_an_unprintable_value_is_handed_only_its_document(string chain)
+        => Assert.That(Handover(chain), Is.EqualTo("Attach"));
+
+    /// <summary>
     /// Compiles the chain, precompiles it, translates the same chain at runtime, and compares.
     /// </summary>
     private static void Agrees<T>(
@@ -364,6 +394,8 @@ public class PrecompiledDocumentTests
     /// Runs the generator over one chain and returns the document it precompiled, or null when
     /// it declined to.
     /// </summary>
+    private static string? _lastHandover;
+
     private static string? Generated(string chain, bool statements = false)
     {
         string body = statements ? chain : "return " + chain + ";";
@@ -408,23 +440,44 @@ public class PrecompiledDocumentTests
             .Create(new QueryInterceptorGenerator())
             .RunGenerators(compilation);
 
+        _lastHandover = null;
+
         var generated = driver.GetRunResult().GeneratedTrees;
         if (generated.Length == 0)
             return null;
 
-        // The document is the second argument of the Attach call the interceptor makes. Read as
-        // a literal token rather than through a semantic model: generated trees carry their own
-        // parse options and cannot simply be added to this compilation.
-        var documents = generated[0].GetRoot()
-            .DescendantNodes()
-            .OfType<InvocationExpressionSyntax>()
-            .Where(i => i.Expression is MemberAccessExpressionSyntax { Name.Identifier.ValueText: "Attach" })
+        // The document is the second argument either call takes — Attach hands over the document
+        // alone, AttachPlan the whole plan. Read as a literal token rather than through a
+        // semantic model: generated trees carry their own parse options and cannot simply be
+        // added to this compilation.
+        _lastHandover = Interceptors(generated[0])
+            .Select(i => ((MemberAccessExpressionSyntax)i.Expression).Name.Identifier.ValueText)
+            .FirstOrDefault();
+
+        var documents = Interceptors(generated[0])
             .Select(i => (i.ArgumentList.Arguments[1].Expression as LiteralExpressionSyntax)?.Token.ValueText)
             .ToArray();
 
         Assert.That(documents, Has.Length.LessThanOrEqualTo(1), "one chain produced several interceptors");
 
         return documents.FirstOrDefault();
+    }
+
+    private static IEnumerable<InvocationExpressionSyntax> Interceptors(SyntaxTree tree)
+        => tree.GetRoot()
+            .DescendantNodes()
+            .OfType<InvocationExpressionSyntax>()
+            .Where(i => i.Expression is MemberAccessExpressionSyntax
+            {
+                Name.Identifier.ValueText: "Attach" or "AttachPlan"
+            });
+
+    /// <summary>Which of the two the compiler emitted for a chain, or null when it declined.</summary>
+    private static string? Handover(string chain)
+    {
+        Generated(chain);
+
+        return _lastHandover;
     }
 
     /// <summary>

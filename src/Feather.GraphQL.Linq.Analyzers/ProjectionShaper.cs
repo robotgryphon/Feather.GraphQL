@@ -58,8 +58,27 @@ internal static class ProjectionShaper
             return null;
 
         if (invocation.ArgumentList.Arguments.Count != 1
-            || invocation.ArgumentList.Arguments[0].Expression is not LambdaExpressionSyntax lambda
-            || lambda.Body is not ExpressionSyntax body)
+            || invocation.ArgumentList.Arguments[0].Expression is not LambdaExpressionSyntax lambda)
+            return null;
+
+        return From(model, lambda, token);
+    }
+
+    /// <summary>
+    /// The same, from the projection's lambda alone.
+    /// </summary>
+    /// <remarks>
+    /// The interceptor generator holds a chain's projection as a lambda rather than as the call
+    /// it was written in, and needs the key to say which shaper a precompiled plan should use.
+    /// Both go through the same renderer, so a key emitted in a plan is the key the shaper
+    /// registered itself under.
+    /// </remarks>
+    public static ShaperModel? From(
+        SemanticModel model,
+        LambdaExpressionSyntax lambda,
+        CancellationToken token)
+    {
+        if (lambda.Body is not ExpressionSyntax body)
             return null;
 
         if (model.GetSymbolInfo(lambda, token).Symbol is not IMethodSymbol { Parameters.Length: 1 } projection)

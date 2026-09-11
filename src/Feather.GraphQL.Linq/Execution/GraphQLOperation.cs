@@ -27,7 +27,7 @@ namespace Feather.GraphQL.Linq.Execution;
 [PublicAPI]
 public sealed record GraphQLOperation(
     [property: StringSyntax("GraphQL")] string Query,
-    IReadOnlyDictionary<string, object?> Variables,
+    IGraphQLVariables Variables,
     string RootField,
     PagingKind Paging)
 {

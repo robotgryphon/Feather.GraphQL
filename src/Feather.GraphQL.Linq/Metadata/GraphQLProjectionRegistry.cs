@@ -45,9 +45,19 @@ public static class GraphQLProjectionRegistry
 
     /// <summary>The shaper for a projection, or null when none was generated for it.</summary>
     internal static Func<object?, object?>? Find(LambdaExpression projection)
-        => ProjectionKey.For(projection) is { } key && _shapers.TryGetValue(key, out var shaper)
-            ? shaper
-            : null;
+        => ProjectionKey.For(projection) is { } key ? Find(key) : null;
+
+    /// <summary>
+    /// The shaper registered under one key, or null when none is.
+    /// </summary>
+    /// <remarks>
+    /// For a precompiled plan, which carries the key the compiler computed rather than the lambda
+    /// it came from — deriving the key is the only thing the lambda was still needed for. A miss
+    /// is not an error: the caller falls back to walking the chain, which is what it did before
+    /// any of this existed.
+    /// </remarks>
+    internal static Func<object?, object?>? Find(string key)
+        => _shapers.TryGetValue(key, out var shaper) ? shaper : null;
 
     /// <summary>How many shapers are registered. For tests that assert coverage.</summary>
     public static int Count => _shapers.Count;

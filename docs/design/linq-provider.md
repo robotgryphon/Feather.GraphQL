@@ -191,59 +191,32 @@ this library's provider, nothing about how the type is queried, and nothing abou
 paging. So it is not a private step inside the query translator — it is a standalone
 component the query translator happens to call.
 
-That makes it an extension on **any** `IQueryable<T>`:
+It was once an extension on **any** `IQueryable<T>` — `ToGraphQLFilter`, `ToGraphQLSort`
+and `ToGraphQLArguments`, which lowered a chain and handed back a `JsonObject` for the
+caller to place in a payload of their own. Those are **gone**. Printing a whole document
+covers what they were for, and better: a caller who can produce the operation does not
+need the argument alone. What remains is the same standalone component, reached only from
+the query translator.
 
-```csharp
-using Feather.GraphQL.Linq.Filtering;
-
-// A source this library knows nothing about.
-IQueryable<Person> source = dbContext.People;          // or people.AsQueryable()
-
-JsonObject filter = source
-    .Where(p => p.Name == "John Smith" && p.Age > 30)
-    .ToGraphQLFilter();
-
-// → { "name": { "eq": "John Smith" }, "age": { "gt": 30 } }
-```
-
-Uses this unlocks beyond the query builder: forwarding a locally-composed or
-EF-originated predicate to an upstream GraphQL service; building a `where` payload to
-drop into a variables payload by hand; and testing predicates without touching a
-queryable at all.
-
-### 4.1 Surface
-
-```csharp
-extension<T>(IQueryable<T> source)
-{
-    JsonObject?            ToGraphQLFilter();     // merged Where clauses
-    JsonArray?             ToGraphQLSort();       // merged OrderBy/ThenBy
-    GraphQLFieldArguments  ToGraphQLArguments();  // where + order + skip/take together
-}
-```
-
-`ToGraphQLFilter` reads only `Where`; `ToGraphQLSort` only the ordering operators. Both
-**throw on operators they do not consume** rather than ignoring them — silently dropping
-a `Take` from a chain someone believed was fully translated is the kind of bug that
-surfaces as missing data in production. `ToGraphQLArguments` is the "consume everything"
-form for callers proxying a whole query.
+The removal took the last `JsonNode` out of the library's lowering with it. The public
+methods were the one consumer that needed nodes, so keeping them meant converting the
+lowered form back into a node tree on the way out; nothing asks for that now.
 
 Two output forms, because they are not the same language:
 
-- `JsonObject` for the **variables** payload — this is the normal path.
-- `.ToGraphQLValueString()` for inlining into query text, which is GraphQL *value*
-  syntax, not JSON: unquoted keys, bare enum identifiers. **Not implemented** — §5.3 lifts
-  filters to variables, so nothing in v1 needs it, and building it correctly means tracking
-  enum identity through the `JsonObject` (a JSON string and a GraphQL enum are
-  indistinguishable once lowered). Deferred until a caller actually hand-writes a document.
+- JSON, written straight into the **variables** payload — this is the normal path.
+- GraphQL *value* syntax for inlining into query text: unquoted keys, bare enum
+  identifiers. `ToGraphQLQuery()` prints this, which is why a lowered value keeps an enum
+  as an enum rather than as text needs it, which is why a lowered value carries enum
+  identity rather than flattening it to a string (a JSON string and a GraphQL enum are
+  indistinguishable once lowered).
 
-**Naming:** the method is `ToGraphQLFilter`, not `ToHotChocolateFilter`, with an optional
-dialect argument defaulting to HC. Baking the vendor into the public API contradicts the
-`IFilterTranslationProvider` seam in §1.1 and guarantees a rename when a second dialect
-lands.
+**Naming:** the dialect is a parameter, not a name. `IFilterTranslationProvider` is the
+seam in §1.1, and baking a vendor into any of this would guarantee a rename when a second
+dialect lands.
 
-**Namespace hygiene:** these live in `Feather.GraphQL.Linq.Filtering`, not a namespace
-anything auto-imports. An extension on `IQueryable<T>` is otherwise visible on every
+**Namespace hygiene:** the filter surface lives in `Feather.GraphQL.Linq.Filtering`, not a
+namespace anything auto-imports. An extension on `IQueryable<T>` is otherwise visible on every
 `DbSet` in the solution.
 
 ### 4.2 Field naming, and where reflection creeps in
@@ -264,7 +237,7 @@ so a registered table is simply found and the reflection path is never entered.
 
 **Reflection remains the fallback, and the boundary is the familiar one.** A queryable
 whose element type is only known at runtime is invisible to the generator, exactly as it
-is to the analyzer — the `FGQL006` case. That fallback is what keeps `ToGraphQLFilter`
+is to the analyzer — the `FGQL006` case. That fallback is what keeps lowering
 working over an `IQueryable<T>` handed in as a parameter.
 
 Two rules the generated table has to match exactly, both of which were wrong in the first
@@ -606,7 +579,7 @@ arrives as a squiggle rather than on the first request.
 | `ToList` / `ToArray` / `foreach` | — | Terminal. Executes, blocking as EF Core's do |
 | `…Async(ct)` / `AsAsyncEnumerable()` | — | Terminal. Same translation, without blocking |
 
-The §4 terminals (`ToGraphQLFilter`, `ToGraphQLSort`, `ToGraphQLArguments`) also work
+The §4 lowering also works
 here — a `GraphQLQueryable` is still an `IQueryable`.
 
 Every operator above executes against the endpoint the queryable came from.
@@ -1044,9 +1017,7 @@ attributes, no queryable of ours:
 [Test]
 public void And_merges_into_one_object() =>
     Assert.That(
-        Array.Empty<Person>().AsQueryable()
-             .Where(p => p.Name == "John" && p.Age > 30)
-             .ToGraphQLFilter()!.ToJsonString(),
+        Lower.Chain(source => source.Where(p => p.Name == "John" && p.Age > 30)),
         Is.EqualTo("""{"name":{"eq":"John"},"age":{"gt":30}}"""));
 ```
 

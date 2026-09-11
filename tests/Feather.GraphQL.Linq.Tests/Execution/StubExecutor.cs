@@ -18,14 +18,26 @@ internal sealed class StubExecutor : IGraphQLQueryExecutor
     public IFilterTranslationProvider FilterProvider => HotChocolateFilterProvider.Instance;
 
     private string? _query;
-    private IReadOnlyDictionary<string, object?>? _variables;
+    private IGraphQLVariables? _variables;
 
     /// <summary>The document of the last execution — what the transport was actually handed.</summary>
     public string Document => _query ?? throw new InvalidOperationException("Nothing was executed.");
 
     /// <summary>The variables payload of the last execution, as JSON.</summary>
-    public string Variables => JsonSerializer.Serialize(
-        _variables ?? throw new InvalidOperationException("Nothing was executed."));
+    public string Variables
+    {
+        get
+        {
+            var payload = _variables ?? throw new InvalidOperationException("Nothing was executed.");
+
+            var buffer = new System.Buffers.ArrayBufferWriter<byte>();
+
+            using (var writer = new Utf8JsonWriter(buffer))
+                payload.WriteTo(writer);
+
+            return System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan);
+        }
+    }
 
     private StubExecutor(string dataJson, Exception? failure = null)
     {

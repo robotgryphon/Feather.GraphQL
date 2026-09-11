@@ -1,7 +1,6 @@
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using Feather.GraphQL.Linq.Filtering;
 
 namespace Feather.GraphQL.Linq.Document;
@@ -63,7 +62,7 @@ internal static class GraphQLDocumentPrinter
 
     public static string PrintInline(GqlDocument document)
     {
-        var values = new Dictionary<string, JsonNode?>(document.Variables.Count, StringComparer.Ordinal);
+        var values = new Dictionary<string, GqlValue?>(document.Variables.Count, StringComparer.Ordinal);
         foreach (var variable in document.Variables)
             values[variable.Name] = variable.Value;
 
@@ -75,7 +74,7 @@ internal static class GraphQLDocumentPrinter
         return builder.ToString();
     }
 
-    private static void PrintField(StringBuilder builder, GqlField field, Dictionary<string, JsonNode?> values)
+    private static void PrintField(StringBuilder builder, GqlField field, Dictionary<string, GqlValue?> values)
     {
         builder.Append(field.Name);
 
@@ -114,7 +113,7 @@ internal static class GraphQLDocumentPrinter
     /// null and string escaping, so those are handed to the JSON writer; the two that differ are
     /// object keys, which GraphQL leaves unquoted, and enum values, which it un-quotes entirely.
     /// </summary>
-    private static void PrintValue(StringBuilder builder, JsonNode? node)
+    private static void PrintValue(StringBuilder builder, GqlValue? node)
     {
         switch (node)
         {
@@ -122,26 +121,28 @@ internal static class GraphQLDocumentPrinter
                 builder.Append("null");
                 return;
 
-            case JsonArray array:
+            case GqlList list:
             {
                 builder.Append('[');
-                for (int i = 0; i < array.Count; i++)
+
+                for (int i = 0; i < list.Items.Count; i++)
                 {
                     if (i > 0)
                         builder.Append(", ");
 
-                    PrintValue(builder, array[i]);
+                    PrintValue(builder, list.Items[i]);
                 }
 
                 builder.Append(']');
                 return;
             }
 
-            case JsonObject obj:
+            case GqlObject obj:
             {
                 builder.Append('{');
                 bool first = true;
-                foreach (var (key, value) in obj)
+
+                foreach (var (key, value) in obj.Fields)
                 {
                     if (!first)
                         builder.Append(", ");
@@ -155,14 +156,64 @@ internal static class GraphQLDocumentPrinter
                 return;
             }
 
-            // An enum literal is a bare name; quoting it would make it a String and the server
-            // would reject it.
-            case JsonValue value when value.TryGetValue<GqlEnumValue>(out var enumValue):
+            case GqlScalar scalar:
+                PrintScalar(builder, scalar.Value);
+                return;
+        }
+    }
+
+    /// <summary>
+    /// Writes one value as a GraphQL literal.
+    /// </summary>
+    /// <remarks>
+    /// The two languages agree on numbers, booleans, null and string escaping, so those go
+    /// through the JSON writer. The one that differs is an enum, which GraphQL leaves unquoted —
+    /// which is the whole reason an enum is carried as itself rather than as text.
+    /// </remarks>
+    private static void PrintScalar(StringBuilder builder, object? value)
+    {
+        switch (value)
+        {
+            case null:
+                builder.Append("null");
+                return;
+
+            case GqlEnumValue enumValue:
                 builder.Append(enumValue.Name);
                 return;
 
+            case Enum e:
+                builder.Append(GqlEnumNaming.Of(e));
+                return;
+
+            case string text:
+                builder.Append(JsonSerializer.Serialize(text, _literals));
+                return;
+
+            case bool flag:
+                builder.Append(flag ? "true" : "false");
+                return;
+
+            case System.Collections.IEnumerable items and not string:
+            {
+                builder.Append('[');
+                bool first = true;
+
+                foreach (object? item in items)
+                {
+                    if (!first)
+                        builder.Append(", ");
+
+                    first = false;
+                    PrintScalar(builder, item);
+                }
+
+                builder.Append(']');
+                return;
+            }
+
             default:
-                builder.Append(node.ToJsonString(_literals));
+                builder.Append(JsonSerializer.Serialize(value, value.GetType(), _literals));
                 return;
         }
     }

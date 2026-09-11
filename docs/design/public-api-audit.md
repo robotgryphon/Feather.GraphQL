@@ -134,8 +134,6 @@ Translation and materialization. Depends on nothing else in the repo.
 | `Filtering/GraphQLWhereExtensions.cs` | `GraphQLWhereExtensions` | `Where(argumentName, predicate)` and `Where((TFilter f) => …)`. | **Keep** — see *Known sharp edge* |
 | `Filtering/GraphQLArgumentExtensions.cs` | `GraphQLArgumentExtensions` | `WithGraphQLArguments(names)` — renames several arguments at once. | **Keep** |
 | `Filtering/GraphQLArgumentNames.cs` | `GraphQLArgumentNames` | The names themselves: `Filter`, `Order`, `Take`, `First`, `Skip`, `Last`. | **Keep** |
-| `Filtering/GraphQLFilterExtensions.cs` | `GraphQLFilterExtensions` | `ToGraphQLFilter`, `ToGraphQLSort`, `ToGraphQLArguments` over **any** `IQueryable<T>` — an EF `DbSet` included. | **Keep** |
-| `Filtering/GraphQLFieldArguments.cs` | `GraphQLFieldArguments` | What `ToGraphQLArguments()` returns: where, order, skip, take. | **Keep** |
 | `GraphQLTranslationException.cs` | `GraphQLTranslationException` | Every translation refusal, carrying the `FGQL…` diagnostic ID the analyzer would have reported. | **Keep** |
 
 ### The extension seams

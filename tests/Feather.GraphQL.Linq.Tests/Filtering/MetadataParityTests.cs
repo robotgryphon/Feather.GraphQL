@@ -1,4 +1,3 @@
-using Feather.GraphQL.Linq.Filtering;
 using Feather.GraphQL.Linq.Tests.Where;
 
 namespace Feather.GraphQL.Linq.Tests.Filtering;
@@ -14,13 +13,13 @@ public class MetadataParityTests
     [Test]
     public void Attributed_and_unattributed_types_lower_identically()
     {
-        string unattributed = Array.Empty<Person>().AsQueryable()
+        string unattributed = Lower.Of(Array.Empty<Person>().AsQueryable()
             .Where(p => p.Name == "John" && p.Age > 30 && p.Email == "a@b.c")
-            .ToGraphQLFilter()!.ToJsonString();
+            .Expression);
 
-        string attributed = Array.Empty<AttributedPerson>().AsQueryable()
+        string attributed = Lower.Of(Array.Empty<AttributedPerson>().AsQueryable()
             .Where(p => p.Name == "John" && p.Age > 30 && p.Email == "a@b.c")
-            .ToGraphQLFilter()!.ToJsonString();
+            .Expression);
 
         Assert.That(attributed, Is.EqualTo(unattributed));
     }

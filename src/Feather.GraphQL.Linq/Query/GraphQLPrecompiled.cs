@@ -1,7 +1,9 @@
 using System.ComponentModel;
 using JetBrains.Annotations;
 
+using Feather.GraphQL.Linq.Execution;
 using Feather.GraphQL.Linq.Expressions;
+using Feather.GraphQL.Linq.Metadata;
 
 namespace Feather.GraphQL.Linq.Query;
 
@@ -77,33 +79,65 @@ public static class GraphQLPrecompiled
     /// </para>
     /// </remarks>
     /// <param name="source">The queryable the chain starts at.</param>
-    /// <param name="document">The printed document. It binds no variables.</param>
+    /// <param name="document">The printed document.</param>
     /// <param name="rootField">The field the query reads from.</param>
     /// <param name="paging">The <c>PagingKind</c> the root field was declared with.</param>
     /// <param name="resultOperator">The terminal that reduces the sequence.</param>
+    /// <param name="page">
+    /// The page the terminal asked the server for — one for <c>First</c>, two for
+    /// <c>Single</c> — or null where it asked for none. It is the chain's only variable, and the
+    /// only one whose value a compiler can know.
+    /// </param>
+    /// <param name="projectionKey">
+    /// The key of the shaper that applies this chain's <c>Select</c>, or null where it had none.
+    /// </param>
+    /// <param name="filterHoles">How many values the filter's shape leaves open.</param>
+    /// <param name="filter">
+    /// Builds this chain's filter from the values read out of its predicate, or null where the
+    /// chain has no filter. The shape came from the compiler; only the values are runtime.
+    /// </param>
     public static IQueryable<T> AttachPlan<T>(
         IQueryable<T> source,
         string document,
         string rootField,
         int paging,
-        int resultOperator)
+        int resultOperator,
+        int? page,
+        string? projectionKey,
+        int filterHoles = 0,
+        Func<IReadOnlyList<object?>, IGraphQLVariables>? filter = null)
     {
         ArgumentNullException.ThrowIfNull(source);
 
-        if (source.Provider is GraphQLQueryProvider provider)
-        {
-            provider.PrecompiledPlan = new GraphQLQueryPlan(
-                document,
-                GraphQLQueryPlan.NoVariables,
-                typeof(T),
-                rootField,
-                (PagingKind)paging,
-                Projection: null,
-                (QueryResultOperator)resultOperator);
+        if (source.Provider is not GraphQLQueryProvider provider)
+            return source;
 
-            Interlocked.Increment(ref _attached);
-        }
+        provider.PrecompiledDocument = document;
+        Interlocked.Increment(ref _attached);
+
+        Func<object?, object?>? shaper = null;
+
+        // A key with no shaper behind it means the shaper generator declined a projection the
+        // document generator could print. The plan would then have no way to apply it, so there
+        // is no plan — the document still stands, and the chain is walked as it used to be.
+        if (projectionKey is not null && (shaper = GraphQLProjectionRegistry.Find(projectionKey)) is null)
+            return source;
+
+        provider.PrecompiledPlan = new GraphQLQueryPlan(
+            document,
+            page is { } size ? GraphQLVariables.Page("v0", size) : GraphQLVariables.None,
+            typeof(T),
+            rootField,
+            (PagingKind)paging,
+            Projection: null,
+            (QueryResultOperator)resultOperator)
+        {
+            Shaper = shaper,
+            Filter = filter,
+            FilterHoles = filterHoles
+        };
 
         return source;
     }
+
 }

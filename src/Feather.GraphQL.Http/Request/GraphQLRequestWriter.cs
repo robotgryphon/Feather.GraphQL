@@ -40,7 +40,12 @@ internal static class GraphQLRequestWriter
             if (request.OperationName is { Length: > 0 } operation)
                 writer.WriteString("operationName"u8, operation);
 
-            WriteMap(writer, "variables"u8, request.Variables);
+            if (request.Variables is { IsEmpty: false } variables)
+            {
+                writer.WritePropertyName("variables"u8);
+                variables.WriteTo(writer);
+            }
+
             WriteMap(writer, "extensions"u8, request.Extensions);
 
             writer.WriteEndObject();
@@ -64,9 +69,8 @@ internal static class GraphQLRequestWriter
         {
             writer.WritePropertyName(key);
 
-            // The LINQ integration builds every value as a node, so this is the path that runs.
-            // Anything else is written through the serializer, which is the only way to know what
-            // an arbitrary object is.
+            // Extensions only, and they are whatever a caller put in them — so this is the one
+            // place left that has to ask an object what it is before it can write it.
             switch (value)
             {
                 case null:

@@ -62,6 +62,35 @@ public class QueryPipeline
         return rows.Length;
     }
 
+    /// <summary>
+    /// A chain that binds nothing, composed at runtime.
+    /// </summary>
+    /// <remarks>
+    /// The pair below is what a precompiled <em>plan</em> is worth, as against a precompiled
+    /// document. Both chains print the same document at build time; only the inline one can also
+    /// have its root field, paging, terminal and projection decided there, because only a chain
+    /// that binds no value has nothing left to read out of the expression tree.
+    /// </remarks>
+    [Benchmark(Description = "Projected: composed at runtime")]
+    public async Task<int> ProjectedComposed()
+    {
+        var rows = await Source(_executor)
+            .Select(c => new { c.Name, Continent = c.Continent.Name })
+            .ToArrayAsync();
+
+        return rows.Length;
+    }
+
+    [Benchmark(Description = "Projected: precompiled plan")]
+    public async Task<int> ProjectedPrecompiled()
+    {
+        var rows = await GraphQLQueryable.For<Country>(_executor, "countries")
+            .Select(c => new { c.Name, Continent = c.Continent.Name })
+            .ToArrayAsync();
+
+        return rows.Length;
+    }
+
     /// <summary>The same query, behind a boundary the generator declines to look through.</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static IQueryable<Country> Source(IGraphQLQueryExecutor executor)

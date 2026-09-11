@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using System.Diagnostics.CodeAnalysis;
+using Feather.GraphQL.Linq.Execution;
 using Feather.GraphQL.Linq.Expressions;
 
 namespace Feather.GraphQL.Linq.Query;
@@ -28,7 +29,7 @@ namespace Feather.GraphQL.Linq.Query;
 /// <param name="ResultOperator">How the sequence is reduced to the caller's result.</param>
 internal sealed record GraphQLQueryPlan(
     [property: StringSyntax("GraphQL")] string Query,
-    IReadOnlyDictionary<string, object?> Variables,
+    IGraphQLVariables Variables,
     Type ElementType,
     string RootField,
     PagingKind Paging,
@@ -36,13 +37,27 @@ internal sealed record GraphQLQueryPlan(
     QueryResultOperator ResultOperator)
 {
     /// <summary>
-    /// The payload of a chain that bound no arguments, which is most of them.
+    /// The projection, already resolved to the function that applies it.
     /// </summary>
     /// <remarks>
-    /// Shared rather than allocated per query. A payload is read and never written — the
-    /// transport serializes it and the plan is discarded — so one empty dictionary answers every
-    /// query that has nothing to say.
+    /// Set only by a precompiled plan, which has a key instead of a lambda: the compiler computed
+    /// the key, so there is nothing left for <see cref="Projection"/> to be derived from and
+    /// nothing to derive it for. When this is null the materializer resolves
+    /// <see cref="Projection"/> the way it always has.
     /// </remarks>
-    public static readonly IReadOnlyDictionary<string, object?> NoVariables =
-        new Dictionary<string, object?>(0, StringComparer.Ordinal);
+    public Func<object?, object?>? Shaper { get; init; }
+
+    /// <summary>
+    /// Builds this query's filter from the values its predicate binds.
+    /// </summary>
+    /// <remarks>
+    /// Set only by a precompiled plan whose filter the compiler could print. The shape is fixed
+    /// in generated code; the values are read out of the expression tree on each execution, which
+    /// is the one part of a predicate that cannot be known any earlier.
+    /// </remarks>
+    public Func<IReadOnlyList<object?>, IGraphQLVariables>? Filter { get; init; }
+
+    /// <summary>How many values <see cref="Filter"/> expects.</summary>
+    public int FilterHoles { get; init; }
+
 }

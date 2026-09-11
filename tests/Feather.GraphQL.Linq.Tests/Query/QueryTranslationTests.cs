@@ -121,6 +121,5 @@ public class QueryTranslationTests
         Assert.That(split, Is.EqualTo(single));
     }
 
-    private static string Variables(GraphQLQueryPlan plan)
-        => System.Text.Json.JsonSerializer.Serialize(plan.Variables);
+    private static string Variables(GraphQLQueryPlan plan) => VariablePayload.Of(plan);
 }

@@ -29,6 +29,10 @@ internal static class ResultMaterializer
     /// </remarks>
     public static Func<object?, object?>? Shaper(GraphQLQueryPlan plan)
     {
+        // A precompiled plan arrives with it already resolved; there was never a lambda.
+        if (plan.Shaper is { } resolved)
+            return resolved;
+
         if (plan.Projection is not { } projection)
             return null;
 

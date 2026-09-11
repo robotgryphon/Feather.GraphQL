@@ -99,6 +99,9 @@ internal static class QueryDocumentWriter
     /// </summary>
     private static bool ApplyResult(ChainFacts facts)
     {
+        // Recorded before the terminal contributes its own, so the two can be told apart later.
+        facts.ExplicitTake = facts.HasTake;
+
         switch (facts.Result)
         {
             case ResultKind.Sequence:
@@ -107,9 +110,15 @@ internal static class QueryDocumentWriter
             case ResultKind.First:
             case ResultKind.FirstOrDefault:
             case ResultKind.Any:
+                facts.HasTake = true;
+                facts.ResultPage = 1;
+                return true;
+
+            // Two rows: enough to return the one, and enough to prove it was not two.
             case ResultKind.Single:
             case ResultKind.SingleOrDefault:
                 facts.HasTake = true;
+                facts.ResultPage = 2;
                 return true;
 
             case ResultKind.Last:
@@ -119,6 +128,7 @@ internal static class QueryDocumentWriter
 
                 facts.HasTake = false;
                 facts.HasLast = true;
+                facts.ResultPage = 1;
                 return true;
 
             case ResultKind.Count:

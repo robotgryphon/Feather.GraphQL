@@ -1,6 +1,6 @@
 using System.Linq.Expressions;
-using System.Text.Json.Nodes;
 using Feather.GraphQL.Linq.Document;
+using Feather.GraphQL.Linq.Execution;
 using Feather.GraphQL.Linq.Expressions;
 using Feather.GraphQL.Linq.Filtering;
 using Feather.GraphQL.Linq.Metadata;
@@ -198,7 +198,7 @@ internal sealed class GraphQLQueryTranslator(GraphQLQueryOptions options)
         List<GqlArgument> arguments,
         string argument,
         string type,
-        JsonNode? value)
+        GqlValue? value)
     {
         string name = $"v{variables.Count}";
         variables.Add(new GqlVariableDefinition(name, type, value));
@@ -211,7 +211,7 @@ internal sealed class GraphQLQueryTranslator(GraphQLQueryOptions options)
         string argument,
         string type,
         int value)
-        => Bind(variables, arguments, argument, type, JsonValue.Create(value));
+        => Bind(variables, arguments, argument, type, new GqlScalar(value));
 
     /// <summary>
     /// HotChocolate's paging attributes wrap the result, and the wrapper is part of both the
@@ -225,15 +225,6 @@ internal sealed class GraphQLQueryTranslator(GraphQLQueryOptions options)
             _ => selection
         };
 
-    private static IReadOnlyDictionary<string, object?> BuildVariables(IReadOnlyList<GqlVariableDefinition> variables)
-    {
-        if (variables.Count == 0)
-            return GraphQLQueryPlan.NoVariables;
-
-        var payload = new Dictionary<string, object?>(variables.Count, StringComparer.Ordinal);
-        foreach (var variable in variables)
-            payload[variable.Name] = variable.Value;
-
-        return payload;
-    }
+    private static IGraphQLVariables BuildVariables(IReadOnlyList<GqlVariableDefinition> variables)
+        => GraphQLVariables.Lowered(variables);
 }

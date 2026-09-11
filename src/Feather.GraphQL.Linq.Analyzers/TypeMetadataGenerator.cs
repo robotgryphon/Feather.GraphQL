@@ -121,9 +121,7 @@ public sealed class TypeMetadataGenerator : IIncrementalGenerator
         bool isEntryPoint = EntryPoints.IsEntryPoint(method);
 
         bool isFilterSurface = method.Name is "Where"
-                && container is "Feather.GraphQL.Linq.Filtering.GraphQLWhereExtensions"
-            || method.Name is "ToGraphQLFilter" or "ToGraphQLSort" or "ToGraphQLArguments"
-                && container is "Feather.GraphQL.Linq.Filtering.GraphQLFilterExtensions";
+            && container is "Feather.GraphQL.Linq.Filtering.GraphQLWhereExtensions";
 
         if (!isEntryPoint && !isFilterSurface)
             return roots;

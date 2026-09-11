@@ -56,7 +56,13 @@ public sealed class QueryInterceptorGenerator : IIncrementalGenerator
     /// document is — but only when the chain binds no values, because a bound value lives in the
     /// expression tree and reading it is the whole reason the tree is walked at all.
     /// </remarks>
-    private sealed record StaticPlan(string RootField, int Paging, int ResultOperator);
+    private sealed record StaticPlan(
+        string RootField,
+        int Paging,
+        int ResultOperator,
+        int? Page,
+        string? ProjectionKey,
+        FilterSkeletonModel? Filter);
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
@@ -110,7 +116,8 @@ public sealed class QueryInterceptorGenerator : IIncrementalGenerator
         if (location is null)
             return null;
 
-        return Signature(method, location.GetInterceptsLocationAttributeSyntax(), document, Plan(completions));
+        return Signature(method, location.GetInterceptsLocationAttributeSyntax(), document,
+            Plan(completions, context.SemanticModel, token));
     }
 
     /// <summary>
@@ -133,18 +140,49 @@ public sealed class QueryInterceptorGenerator : IIncrementalGenerator
     /// precompiled plan quietly wrong.
     /// </para>
     /// </remarks>
-    private static StaticPlan? Plan(IReadOnlyList<ChainFacts> completions)
+    private static StaticPlan? Plan(
+        IReadOnlyList<ChainFacts> completions,
+        SemanticModel model,
+        CancellationToken token)
     {
         StaticPlan? agreed = null;
 
         foreach (var facts in completions)
         {
-            if (facts.HasFilter || facts.HasOrdering || facts.HasPaging || facts.Projection is not null)
+            // A predicate, an ordering, an offset or a page the chain sized itself all bind a
+            // value that only exists once the expression tree is walked. A page a *terminal*
+            // asked for does not: First means one, Single means two, and that is decided here.
+            if (facts.HasOrdering || facts.HasSkip || facts.ExplicitTake)
                 return null;
 
-            var plan = new StaticPlan(facts.RootField, (int)facts.Paging, (int)facts.Result);
+            string? projection = null;
 
-            if (agreed is not null && agreed != plan)
+            if (facts.Projection is not null)
+            {
+                // The key the shaper registered itself under. Without one the materializer would
+                // need the lambda, which is the thing this exists to avoid walking for.
+                if (ProjectionShaper.From(model, facts.Projection, token) is not { } shaper)
+                    return null;
+
+                projection = shaper.Key;
+            }
+
+            // A filter whose shape the compiler can print leaves only its values to be read at
+            // runtime. One that it cannot is not a refusal — the chain keeps its runtime lowering.
+            var filter = facts.HasFilter && !facts.HasOpaquePredicate
+                ? FilterSkeleton.From(facts.Predicates, model, token)
+                : null;
+
+            if (facts.HasFilter && filter is null)
+                return null;
+
+            var plan = new StaticPlan(
+                facts.RootField, (int)facts.Paging, (int)facts.Result, facts.ResultPage, projection, filter);
+
+            if (agreed is not null && (agreed with { Filter = null }) != (plan with { Filter = null }))
+                return null;
+
+            if (agreed is { Filter: not null } && plan.Filter?.Body != agreed.Filter.Body)
                 return null;
 
             agreed = plan;
@@ -299,12 +337,16 @@ public sealed class QueryInterceptorGenerator : IIncrementalGenerator
 
             """);
 
+        // A file-local type cannot be nested, so the filters are collected here and written as
+        // siblings of the class whose queries use them.
+        var filters = new StringBuilder();
+
         int index = 0;
         foreach (var interception in found.Distinct())
         {
             builder.Append("        ").Append(interception.Attribute).Append('\n')
                 .Append("        public static global::System.Linq.IQueryable<")
-                .Append(interception.TypeParameter).Append("> Query").Append(index++)
+                .Append(interception.TypeParameter).Append("> Query").Append(index)
                 .Append('<').Append(interception.TypeParameter).Append(">(")
                 .Append(interception.Parameters).Append(')').Append(interception.Constraints).Append('\n')
                 .Append("            => global::Feather.GraphQL.Linq.Query.GraphQLPrecompiled.")
@@ -316,15 +358,86 @@ public sealed class QueryInterceptorGenerator : IIncrementalGenerator
             {
                 builder.Append(",\n                ").Append(Literal(plan.RootField))
                     .Append(", ").Append(plan.Paging)
-                    .Append(", ").Append(plan.ResultOperator);
+                    .Append(", ").Append(plan.ResultOperator)
+                    .Append(", ").Append(plan.Page is { } page ? page.ToString() : "null")
+                    .Append(", ").Append(plan.ProjectionKey is { } key ? Literal(key) : "null")
+                    .Append(", ").Append(plan.Filter?.Holes.Count ?? 0)
+                    .Append(",\n                ")
+                    .Append(plan.Filter is null ? "null" : "Filter" + index + ".Build");
             }
 
             builder.Append(");\n\n");
+
+            if (interception.Plan?.Filter is { } skeleton)
+                Filter(filters, index, skeleton);
+
+            index++;
         }
 
-        builder.Append("    }\n}\n");
+        builder.Append("    }\n\n").Append(filters).Append("}\n");
 
         context.AddSource("GraphQLPrecompiledQueries.g.cs", SourceText.From(builder.ToString(), Encoding.UTF8));
+    }
+
+    /// <summary>
+    /// Emits the filter one chain binds, as a payload that writes itself.
+    /// </summary>
+    /// <remarks>
+    /// The shape is fixed here, in the writer calls; the values arrive as constructor arguments
+    /// the runtime read out of the expression tree. Nothing about the filter is built at run time
+    /// — no node tree, no dictionary, no intermediate of any kind between the predicate and the
+    /// bytes on the wire.
+    /// </remarks>
+    private static void Filter(StringBuilder builder, int index, FilterSkeletonModel skeleton)
+    {
+        builder.Append("    /// <summary>The filter for Query").Append(index)
+            .Append(", printed at build time with its values left open.</summary>\n")
+            .Append("    file sealed class Filter").Append(index)
+            .Append(" : global::Feather.GraphQL.IGraphQLVariables\n    {\n");
+
+        for (int i = 0; i < skeleton.Holes.Count; i++)
+        {
+            builder.Append("        private readonly ").Append(skeleton.Holes[i].Type)
+                .Append(" _").Append(i).Append(";\n");
+        }
+
+        builder.Append("\n        private Filter").Append(index).Append('(');
+
+        for (int i = 0; i < skeleton.Holes.Count; i++)
+        {
+            if (i > 0)
+                builder.Append(", ");
+
+            builder.Append(skeleton.Holes[i].Type).Append(" v").Append(i);
+        }
+
+        builder.Append(")\n        {\n");
+
+        for (int i = 0; i < skeleton.Holes.Count; i++)
+            builder.Append("            _").Append(i).Append(" = v").Append(i).Append(";\n");
+
+        builder.Append("        }\n\n")
+            .Append("        public static global::Feather.GraphQL.IGraphQLVariables Build(")
+            .Append("global::System.Collections.Generic.IReadOnlyList<object?> values)\n")
+            .Append("            => new Filter").Append(index).Append('(');
+
+        for (int i = 0; i < skeleton.Holes.Count; i++)
+        {
+            if (i > 0)
+                builder.Append(", ");
+
+            builder.Append('(').Append(skeleton.Holes[i].Type).Append(")values[").Append(i).Append("]!");
+        }
+
+        builder.Append(");\n\n")
+            .Append("        public bool IsEmpty => false;\n\n")
+            .Append("        public void WriteTo(global::System.Text.Json.Utf8JsonWriter writer)\n")
+            .Append("        {\n")
+            .Append("            writer.WriteStartObject();\n")
+            .Append("            writer.WritePropertyName(\"v0\");\n")
+            .Append(skeleton.Body)
+            .Append("            writer.WriteEndObject();\n")
+            .Append("        }\n    }\n\n");
     }
 
     private static string Literal(string value)

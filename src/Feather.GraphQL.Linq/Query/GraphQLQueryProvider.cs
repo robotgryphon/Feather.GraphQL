@@ -3,6 +3,7 @@ using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using Feather.GraphQL.Linq.Execution;
 using Feather.GraphQL.Linq.Expressions;
+using Feather.GraphQL.Linq.Filtering;
 
 namespace Feather.GraphQL.Linq.Query;
 
@@ -130,9 +131,32 @@ internal sealed class GraphQLQueryProvider(IGraphQLQueryExecutor? executor, Grap
     /// </remarks>
     public GraphQLQueryPlan? PrecompiledPlan { get; set; }
 
+    /// <summary>
+    /// The plan for this chain: the compiler's when it printed one, and translated otherwise.
+    /// </summary>
+    /// <remarks>
+    /// A precompiled plan that binds a filter is still missing its values, because those live in
+    /// the expression tree the caller's own code rebuilt on this call. Reading them is all that is
+    /// left to do — the shape was decided at build time. A predicate that does not come apart the
+    /// way the compiler expected falls through to being lowered whole, so the two halves
+    /// disagreeing costs speed rather than correctness.
+    /// </remarks>
     private GraphQLQueryPlan Plan(Expression expression)
-        => PrecompiledPlan
-            ?? new GraphQLQueryTranslator(Options).Translate(expression, PrecompiledDocument);
+    {
+        if (PrecompiledPlan is not { } precompiled)
+            return new GraphQLQueryTranslator(Options).Translate(expression, PrecompiledDocument);
+
+        if (precompiled.Filter is not { } filter)
+            return precompiled;
+
+        if (QueryChain.Parse(expression).MergedPredicate() is { } predicate
+            && FilterHoles.Collect(predicate, precompiled.FilterHoles) is { } values)
+        {
+            return precompiled with { Variables = filter(values) };
+        }
+
+        return new GraphQLQueryTranslator(Options).Translate(expression, PrecompiledDocument);
+    }
 
     private IGraphQLQueryExecutor Executor
         => executor ?? throw new GraphQLTranslationException("FGQL016",

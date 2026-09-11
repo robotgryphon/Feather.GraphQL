@@ -2,7 +2,7 @@ using System.Collections;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.Serialization;
-using System.Text.Json.Nodes;
+using Feather.GraphQL.Linq.Document;
 using Feather.GraphQL.Linq.Expressions;
 using Feather.GraphQL.Linq.Metadata;
 
@@ -19,35 +19,35 @@ namespace Feather.GraphQL.Linq.Filtering;
 /// </remarks>
 internal sealed class FilterTranslator(IFilterTranslationProvider provider)
 {
-    public JsonObject? Translate(LambdaExpression? predicate)
+    public GqlObject? Translate(LambdaExpression? predicate)
     {
         if (predicate is null)
             return null;
 
         var body = PartialEvaluator.Reduce(predicate.Body);
-        return (JsonObject)Normalize(Lower(body, predicate.Parameters[0], negated: false))!;
+        return (GqlObject)Normalize(Lower(body, predicate.Parameters[0], negated: false))!;
     }
 
-    public JsonArray? TranslateOrdering(IReadOnlyList<(LambdaExpression Key, bool Descending)> ordering)
+    public GqlList? TranslateOrdering(IReadOnlyList<(LambdaExpression Key, bool Descending)> ordering)
     {
         if (ordering.Count == 0)
             return null;
 
-        var order = new JsonArray();
+        var order = new GqlList();
         foreach (var (key, descending) in ordering)
         {
             var key_ = ResolvePath(key.Body, key.Parameters[0])
                 ?? throw GraphQLTranslationException.BadOrderingKey(
                     $"'{key.Body}' is not a member of the element type", key.Body);
 
-            order.Add(Nest(key_.Path,
-                JsonValue.Create(new GqlEnumValue(descending ? provider.Descending : provider.Ascending))));
+            order.Items.Add(Nest(key_.Path,
+                new GqlScalar(new GqlEnumValue(descending ? provider.Descending : provider.Ascending))));
         }
 
         return order;
     }
 
-    private JsonObject Lower(Expression node, ParameterExpression parameter, bool negated)
+    private GqlObject Lower(Expression node, ParameterExpression parameter, bool negated)
     {
         switch (node)
         {
@@ -82,7 +82,7 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
                     ?? throw GraphQLTranslationException.NotLowerable(
                         $"'{member}' is not a member of the filtered element", member);
 
-                return Leaf(boolean.Path, provider.Equal, JsonValue.Create(!negated));
+                return Leaf(boolean.Path, provider.Equal, new GqlScalar(!negated));
             }
 
             case ConstantExpression constant:
@@ -95,7 +95,7 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
         }
     }
 
-    private JsonObject Comparison(BinaryExpression binary, ParameterExpression parameter, bool negated)
+    private GqlObject Comparison(BinaryExpression binary, ParameterExpression parameter, bool negated)
     {
         // Either orientation is legal: `p.Age > 30` and `30 < p.Age` mean the same thing.
         var (path, value, flipped) = Orient(binary, parameter);
@@ -116,14 +116,14 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
         return Leaf(path, operation, value);
     }
 
-    private (IReadOnlyList<string> Path, JsonNode? Value, bool Flipped) Orient(
+    private (IReadOnlyList<string> Path, GqlValue? Value, bool Flipped) Orient(
         BinaryExpression binary, ParameterExpression parameter)
     {
         if (ResolvePath(binary.Left, parameter) is { } left)
-            return (left.Path, ToJson(Constant(binary.Right, binary), left.LeafType), false);
+            return (left.Path, Value(Constant(binary.Right, binary), left.LeafType), false);
 
         if (ResolvePath(binary.Right, parameter) is { } right)
-            return (right.Path, ToJson(Constant(binary.Left, binary), right.LeafType), true);
+            return (right.Path, Value(Constant(binary.Left, binary), right.LeafType), true);
 
         // A side that reads the parameter but is not a plain member chain is an unsupported
         // *expression* (FGQL002), not an un-mappable clause (FGQL003). The distinction matters:
@@ -159,7 +159,7 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
         }
     }
 
-    private JsonObject MethodCall(MethodCallExpression call, ParameterExpression parameter, bool negated)
+    private GqlObject MethodCall(MethodCallExpression call, ParameterExpression parameter, bool negated)
     {
         // string.Contains / StartsWith / EndsWith — instance calls on a member of the element.
         if (call.Object is not null && call.Object.Type == typeof(string) && call.Arguments.Count == 1)
@@ -177,7 +177,7 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
                     $"string method '{call.Method.Name}'", call)
             };
 
-            return Leaf(text.Path, operation, ToJson(Constant(call.Arguments[0], call), typeof(string)));
+            return Leaf(text.Path, operation, Value(Constant(call.Arguments[0], call), typeof(string)));
         }
 
         if (call.Method.Name is nameof(Enumerable.Contains))
@@ -194,7 +194,7 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
     /// Two distinct shapes share the name <c>Contains</c>: a constant collection containing a
     /// member (<c>in</c>), and a member collection containing a constant (<c>some { eq }</c>).
     /// </summary>
-    private JsonObject ContainsCall(MethodCallExpression call, ParameterExpression parameter, bool negated)
+    private GqlObject ContainsCall(MethodCallExpression call, ParameterExpression parameter, bool negated)
     {
         var (source, item) = call.Object is not null
             ? (call.Object, call.Arguments[0])
@@ -206,20 +206,18 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
 
         if (ResolvePath(item, parameter) is { } itemPath)
             return Leaf(itemPath.Path, negated ? provider.NotIn : provider.In,
-                ToJson(Constant(source, call), itemPath.LeafType));
+                Value(Constant(source, call), itemPath.LeafType));
 
         if (ResolvePath(source, parameter) is { } sourcePath)
-            return Nest(sourcePath.Path, new JsonObject
-            {
-                [negated ? provider.None : provider.Some] =
-                    new JsonObject { [provider.Equal] = ToJson(Constant(item, call), ElementType(sourcePath.LeafType)) }
-            });
+            return Nest(sourcePath.Path, new GqlObject(
+                negated ? provider.None : provider.Some,
+                new GqlObject(provider.Equal, Value(Constant(item, call), ElementType(sourcePath.LeafType)))));
 
         throw GraphQLTranslationException.NotLowerable(
             $"neither side of '{call}' is a member of the filtered element", call);
     }
 
-    private JsonObject Quantifier(MethodCallExpression call, ParameterExpression parameter, bool negated)
+    private GqlObject Quantifier(MethodCallExpression call, ParameterExpression parameter, bool negated)
     {
         var source = StripSpanConversion(call.Object ?? call.Arguments[0]);
         var resolved = ResolvePath(source, parameter)
@@ -231,7 +229,7 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
 
         // `Any()` with no predicate asks only whether the collection is non-empty.
         if (call.Arguments.Count < 2 && call.Object is null || call.Object is not null && call.Arguments.Count == 0)
-            return Nest(path, new JsonObject { [negated ? provider.None : provider.Some] = new JsonObject() });
+            return Nest(path, new GqlObject(negated ? provider.None : provider.Some, new GqlObject()));
 
         var inner = call.Arguments[^1] switch
         {
@@ -252,10 +250,9 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
                 "negated All() has no filter equivalent; rewrite as Any() with the negated predicate", call)
         };
 
-        return Nest(path, new JsonObject
-        {
-            [quantifier] = Lower(PartialEvaluator.Reduce(inner.Body), inner.Parameters[0], negated: false)
-        });
+        return Nest(path, new GqlObject(
+            quantifier,
+            Lower(PartialEvaluator.Reduce(inner.Body), inner.Parameters[0], negated: false)));
     }
 
     /// <summary>A resolved member chain: the GraphQL field path, and the CLR type at its leaf.</summary>
@@ -314,16 +311,16 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
             : throw GraphQLTranslationException.UnsupportedPredicate(
                 $"'{expression}' is not a constant and cannot be sent as a filter value", context);
 
-    private static JsonObject Leaf(IReadOnlyList<string> path, string operation, JsonNode? value)
-        => Nest(path, new JsonObject { [operation] = value });
+    private static GqlObject Leaf(IReadOnlyList<string> path, string operation, GqlValue? value)
+        => Nest(path, new GqlObject(operation, value));
 
-    private static JsonObject Nest(IReadOnlyList<string> path, JsonNode? leaf)
+    private static GqlObject Nest(IReadOnlyList<string> path, GqlValue? leaf)
     {
         var node = leaf;
         for (int i = path.Count - 1; i >= 0; i--)
-            node = new JsonObject { [path[i]] = node };
+            node = new GqlObject(path[i], node);
 
-        return (JsonObject)node!;
+        return (GqlObject)node!;
     }
 
     /// <summary>
@@ -331,62 +328,55 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
     /// they collide. Merging is what makes <c>Where(a).Where(b)</c> read naturally; the array is
     /// what keeps <c>p.Age &gt; 1 &amp;&amp; p.Age &lt; 9</c> correct.
     /// </summary>
-    private JsonObject Combine(JsonObject left, JsonObject right)
+    private GqlObject Combine(GqlObject left, GqlObject right)
         => TryMerge(left, right, out var merged) ? merged : Any(provider.And, left, right);
 
-    private static bool TryMerge(JsonObject left, JsonObject right, out JsonObject merged)
+    private static bool TryMerge(GqlObject left, GqlObject right, out GqlObject merged)
     {
-        merged = [];
+        merged = new GqlObject();
 
-        foreach (var (key, value) in left)
-            merged[key] = value?.DeepClone();
+        // Moved rather than cloned. A GqlValue has no parent, so a value can be in two shapes at
+        // once — which a JsonNode cannot, and which is why this used to deep-clone every entry.
+        foreach (var (key, value) in left.Fields)
+            merged.Set(key, value);
 
-        foreach (var (key, value) in right)
+        foreach (var (key, value) in right.Fields)
         {
-            if (!merged.TryGetPropertyValue(key, out var existing))
+            if (!merged.TryGet(key, out var existing))
             {
-                merged[key] = value?.DeepClone();
+                merged.Set(key, value);
                 continue;
             }
 
             // Both sides constrain the same field: mergeable only if they descend into disjoint
-            // sub-objects. Two operations on one field (`gt` and `lt`) collide and need `and:`.
-            if (existing is JsonObject a && value is JsonObject b && TryMerge(a, b, out var nested))
+            // sub-objects. Two of the same operation on one field collide and need `and:`.
+            if (existing is GqlObject a && value is GqlObject b && TryMerge(a, b, out var nested))
             {
-                merged[key] = nested;
+                merged.Set(key, nested);
                 continue;
             }
 
-            merged = [];
+            merged = new GqlObject();
             return false;
         }
 
         return true;
     }
 
-    private static JsonObject Any(string junction, JsonObject left, JsonObject right)
+    private static GqlObject Any(string junction, GqlObject left, GqlObject right)
     {
-        var branches = new JsonArray();
+        var branches = new GqlList();
 
         // Flatten a nested junction of the same kind so `a || b || c` is one array, not a tree.
         foreach (var operand in new[] { left, right })
         {
-            if (operand.Count == 1 && operand.TryGetPropertyValue(junction, out var existing)
-                && existing is JsonArray nested)
-            {
-                foreach (var branch in nested.ToArray())
-                {
-                    nested.Remove(branch);
-                    branches.Add(branch);
-                }
-            }
+            if (operand.Count == 1 && operand.TryGet(junction, out var existing) && existing is GqlList nested)
+                branches.Items.AddRange(nested.Items);
             else
-            {
-                branches.Add(operand);
-            }
+                branches.Items.Add(operand);
         }
 
-        return new JsonObject { [junction] = branches };
+        return new GqlObject(junction, branches);
     }
 
     /// <summary>
@@ -400,19 +390,22 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
     /// <c>or: [{in: [1,2]}, {eq: 3}]</c>. Normalising afterwards sees the whole array at once, and
     /// reaches junctions nested inside quantifiers for free.
     /// </remarks>
-    private JsonNode? Normalize(JsonNode? node)
+    private GqlValue? Normalize(GqlValue? node)
     {
-        if (node is not JsonObject obj)
+        if (node is not GqlObject obj)
             return node;
 
-        foreach (string key in obj.Select(pair => pair.Key).ToArray())
-            obj[key] = Normalize(obj[key]);
+        for (int i = 0; i < obj.Count; i++)
+        {
+            var (key, child) = obj[i];
+            obj.Set(key, Normalize(child));
+        }
 
         if (obj.Count != 1)
             return obj;
 
-        var (junction, value) = obj.First();
-        if (value is not JsonArray branches || branches.Count < 2)
+        var (junction, value) = obj[0];
+        if (value is not GqlList branches || branches.Items.Count < 2)
             return obj;
 
         string? operation = junction == provider.Or ? provider.Equal
@@ -423,11 +416,11 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
             return obj;
 
         List<string>? shared = null;
-        var values = new List<JsonNode?>();
+        var values = new List<GqlValue?>();
 
-        foreach (var branch in branches)
+        foreach (var branch in branches.Items)
         {
-            if (branch is not JsonObject candidate || !TryUnwrap(candidate, out var path, out string? op, out var leaf)
+            if (branch is not GqlObject candidate || !TryUnwrap(candidate, out var path, out string? op, out var leaf)
                 || op != operation)
                 return obj;
 
@@ -436,12 +429,11 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
             else if (!shared.SequenceEqual(path, StringComparer.Ordinal))
                 return obj;
 
-            values.Add(leaf?.DeepClone());
+            values.Add(leaf);
         }
 
-        var set = new JsonArray();
-        foreach (var item in values)
-            set.Add(item);
+        var set = new GqlList();
+        set.Items.AddRange(values);
 
         return Leaf(shared!, operation == provider.Equal ? provider.In : provider.NotIn, set);
     }
@@ -451,10 +443,10 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
     /// Returns false for anything branching, which is what keeps the collapse conservative.
     /// </summary>
     private static bool TryUnwrap(
-        JsonObject node,
+        GqlObject node,
         out List<string> path,
         out string? operation,
-        out JsonNode? value)
+        out GqlValue? value)
     {
         path = [];
         operation = null;
@@ -466,9 +458,9 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
             if (current.Count != 1)
                 return false;
 
-            var (key, child) = current.First();
+            var (key, child) = current[0];
 
-            if (child is JsonObject nested)
+            if (child is GqlObject nested)
             {
                 path.Add(key);
                 current = nested;
@@ -528,82 +520,26 @@ internal sealed class FilterTranslator(IFilterTranslationProvider provider)
     /// <c>p.Status == Status.Active</c> to an <c>int</c> comparison, so the enum identity is only
     /// recoverable from the member, not from the value.
     /// </summary>
-    private static JsonNode? ToJson(object? value, Type? declaredType = null)
+    /// <summary>
+    /// Wraps a constant as a value, recovering an enum's identity on the way.
+    /// </summary>
+    /// <remarks>
+    /// The declared type is how an enum survives: the compiler lowers <c>p.Kind == Kind.Complex</c>
+    /// to an <c>int</c> comparison, so what it is can only be read off the member. Everything else
+    /// stays exactly as the predicate supplied it, and is converted when it is written.
+    /// </remarks>
+    private static GqlValue? Value(object? value, Type? declaredType = null)
     {
         if (value is not null && declaredType is not null)
         {
             var target = Nullable.GetUnderlyingType(declaredType) ?? declaredType;
+
             if (target.IsEnum && value is not Enum && value.GetType().IsPrimitive)
                 value = Enum.ToObject(target, value);
         }
 
-        switch (value)
-        {
-            case null: return null;
-            case string s: return JsonValue.Create(s);
-            case bool b: return JsonValue.Create(b);
-            case int i: return JsonValue.Create(i);
-            case long l: return JsonValue.Create(l);
-            case short sh: return JsonValue.Create(sh);
-            case byte by: return JsonValue.Create(by);
-            case double d: return JsonValue.Create(d);
-            case float f: return JsonValue.Create(f);
-            case decimal m: return JsonValue.Create(m);
-            case Guid g: return JsonValue.Create(g.ToString());
-            case DateTime dt: return JsonValue.Create(dt.ToString("O"));
-            case DateTimeOffset dto: return JsonValue.Create(dto.ToString("O"));
-            case DateOnly date: return JsonValue.Create(date.ToString("O"));
-            case TimeOnly time: return JsonValue.Create(time.ToString("O"));
-            case Enum e: return JsonValue.Create(new GqlEnumValue(EnumName(e)));
-            case JsonNode node: return node.DeepClone();
-        }
-
-        if (value is IEnumerable enumerable)
-        {
-            // For `in`, declaredType is the *member's* type and the value is a collection of it,
-            // so the member type is already the element type. string is special-cased because it
-            // is itself an IEnumerable<char>.
-            var elementType = declaredType is null || declaredType == typeof(string)
-                ? declaredType
-                : ElementType(declaredType) ?? declaredType;
-            var array = new JsonArray();
-            foreach (var item in enumerable)
-                array.Add(ToJson(item, elementType));
-
-            return array;
-        }
-
-        throw GraphQLTranslationException.UnsupportedPredicate(
-            $"values of type '{value.GetType().Name}' cannot be sent as a filter value");
+        return new GqlScalar(value);
     }
 
-    /// <summary>
-    /// TODO: pin against a generated schema. HotChocolate's default enum value naming is the CLR
-    /// member name in CONSTANT_CASE; <c>[EnumMember(Value)]</c> overrides it. Servers that
-    /// configure a different naming convention will need this to become provider-driven.
-    /// </summary>
-    private static string EnumName(Enum value)
-    {
-        string name = value.ToString();
-        var member = value.GetType().GetField(name, BindingFlags.Public | BindingFlags.Static);
 
-        if (member?.GetCustomAttribute<EnumMemberAttribute>() is { Value.Length: > 0 } attribute)
-            return attribute.Value!;
-
-        return ConstantCase(name);
-    }
-
-    private static string ConstantCase(string name)
-    {
-        var builder = new System.Text.StringBuilder(name.Length + 4);
-        for (int i = 0; i < name.Length; i++)
-        {
-            if (i > 0 && char.IsUpper(name[i]) && (!char.IsUpper(name[i - 1]) || (i + 1 < name.Length && char.IsLower(name[i + 1]))))
-                builder.Append('_');
-
-            builder.Append(char.ToUpperInvariant(name[i]));
-        }
-
-        return builder.ToString();
-    }
 }
