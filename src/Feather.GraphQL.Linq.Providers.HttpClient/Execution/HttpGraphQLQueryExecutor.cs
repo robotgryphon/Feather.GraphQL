@@ -1,6 +1,6 @@
 using System.Runtime.CompilerServices;
 using Feather.GraphQL.Http;
-using Feather.GraphQL.Http.Response;
+using Feather.GraphQL.Serialization;
 using Feather.GraphQL.Http.Request;
 using Feather.GraphQL.Linq.Execution;
 using Feather.GraphQL.Linq.Filtering;

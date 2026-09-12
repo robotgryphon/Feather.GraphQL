@@ -94,7 +94,7 @@ internal static class ProjectionShaper
         var key = new StringBuilder(source).Append("=>");
         var rendered = new StringBuilder();
 
-        if (!Render(body, parameter, key, rendered))
+        if (!Render(model, body, parameter, key, rendered, token))
             return null;
 
         var shaper = new StringBuilder()
@@ -109,15 +109,60 @@ internal static class ProjectionShaper
     }
 
     private static bool Render(
+        SemanticModel model,
         ExpressionSyntax node,
         IParameterSymbol parameter,
         StringBuilder key,
-        StringBuilder rendered)
+        StringBuilder rendered,
+        CancellationToken token)
     {
         switch (node)
         {
             case ParenthesizedExpressionSyntax parenthesized:
-                return Render(parenthesized.Expression, parameter, key, rendered);
+                return Render(model, parenthesized.Expression, parameter, key, rendered, token);
+
+            // A named type built and then filled, which is what most projections into a type of
+            // one's own look like. The type is named in the key because two types filled with the
+            // same members are two shapes; an anonymous one needs no name, since matching members
+            // make it the same type already.
+            case ObjectCreationExpressionSyntax creation:
+            {
+                if (creation.ArgumentList is { Arguments.Count: > 0 }
+                    || creation.Initializer is not { } initializer
+                    || initializer.Expressions.Count == 0
+                    || model.GetTypeInfo(creation, token).Type is not { } target
+                    || MetadataName(target) is not { } name)
+                    return false;
+
+                key.Append("new").Append(name).Append('{');
+                rendered.Append("new ").Append(target.ToDisplayString(_qualified)).Append(" { ");
+
+                for (int i = 0; i < initializer.Expressions.Count; i++)
+                {
+                    if (initializer.Expressions[i] is not AssignmentExpressionSyntax assignment
+                        || assignment.Left is not IdentifierNameSyntax member)
+                        return false;
+
+                    if (i > 0)
+                    {
+                        key.Append(',');
+                        rendered.Append(", ");
+                    }
+
+                    key.Append(member.Identifier.ValueText).Append(':');
+                    rendered.Append(member.Identifier.ValueText).Append(" = ");
+
+                    // A member may be filled from another object built the same way, so this
+                    // recurses where the anonymous case only ever takes a path.
+                    if (!Render(model, assignment.Right, parameter, key, rendered, token))
+                        return false;
+                }
+
+                key.Append('}');
+                rendered.Append(" }");
+
+                return true;
+            }
 
             case AnonymousObjectCreationExpressionSyntax anonymous:
             {

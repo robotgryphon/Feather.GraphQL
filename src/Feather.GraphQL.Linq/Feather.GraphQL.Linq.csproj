@@ -32,6 +32,7 @@
          assembly still raises no transport error of its own — that stays with the transport,
          which owns the exception carrying the response. -->
     <ProjectReference Include="..\Feather.GraphQL.Abstractions\Feather.GraphQL.Abstractions.csproj" />
+    <ProjectReference Include="..\Feather.GraphQL.Serialization\Feather.GraphQL.Serialization.csproj" />
   </ItemGroup>
   <ItemGroup>
     <!-- The analyzer ships inside this package, so a consumer gets the compile-time half of the

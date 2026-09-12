@@ -2,6 +2,22 @@
 
 A GraphQL Client for .NET Standard over HTTP.
 
+# Benchmarks
+
+### Before
+| Rows | Static Query (string) - HTTP | LINQ (Interpreted)   | GraphQL.Client      |
+|-----:|------------------------------|----------------------|---------------------|
+|    1 | **679 ms / 2.69 KB**         | 1,107 ns / 5.60 KB   | 989 ns / 4.49 KB    |
+|  100 | **20,646 ns / 30.2 KB**      | 20,513 ns / 33.98 KB | 22,497 ns / 32.1 KB |
+| 1000 | **203,773 ns / 277 KB**      | 198,670 ns / 288 KB  | 218,751 ns / 280 KB |
+
+### After
+| Rows | Static Query (string) - HTTP | LINQ (AOT Compiled)  | GraphQL.Client   |
+|-----:|------------------------------|----------------------|------------------|
+|    1 | **522 ns / 2.33 KB**         | **398 ns / 1.95 KB** | 941 ns / 4.40 KB |
+|   25 | 3,904 ns                     | 2,562 ns             | 4,433 ns         |
+|  100 | 14,663 ns                    | 9,898 ns             | 15,428 ns        |
+
 ## Specification
 The Library will try to follow the following standards and documents:
 
@@ -12,16 +28,34 @@ The Library will try to follow the following standards and documents:
 
 | Package | What it is | References |
 | --- | --- | --- |
-| `Feather.GraphQL.Abstractions` | The GraphQL error model and `GraphQLException`, transport-neutral | — |
-| `Feather.GraphQL.Http` | `HttpClient` extensions for sending query strings | Abstractions |
-| `Feather.GraphQL.Linq` | LINQ → GraphQL translation and materialization, plus the analyzer | — |
+| `Feather.GraphQL.Abstractions` | The query-side contract: variables, the declaring attributes, and the abstract `GraphQLException` | — |
+| `Feather.GraphQL.Serialization` | A reply's shape and how to read it: the error model, `GraphQLErrorsException`, the readers, the contract registry | Abstractions |
+| `Feather.GraphQL.Http` | `HttpClient` extensions for sending query strings | Abstractions, Serialization |
+| `Feather.GraphQL.Linq` | LINQ → GraphQL translation and materialization, plus the analyzer | Abstractions, Serialization |
 | `Feather.GraphQL.Linq.Providers.HttpClient` | The LINQ provider over `HttpClient`, plus DI | Linq, Http |
 
 A toolkit, not a framework: **Linq and Http do not reference each other.** Take the translator
 without a transport, the transport without a translator, or the provider package that joins them.
-`Abstractions` holds only the error model — `GraphQLError`, `GraphQLLocation`, `ErrorPath` and the
-abstract `GraphQLException` — so a websocket or gRPC transport can report failures in the same
-vocabulary, and be caught the same way, without taking a dependency on HTTP.
+
+`Serialization` is what they share. A reply looks the same whatever carried it — `data`, `errors`,
+and a root field — so reading one belongs in neither the transport nor the translator. It holds
+the error model (`GraphQLError`, `GraphQLLocation`, `ErrorPath`), the readers that build it, and
+the registry those readers resolve contracts through; a websocket or gRPC transport reports
+failures in the same vocabulary, and is caught the same way, without taking a dependency on HTTP.
+`Abstractions` is the other half of that seam — what a *query* agrees with the code running it —
+and it depends on nothing at all.
+
+Failure comes in three widths, so catch at the one you mean:
+
+```csharp
+catch (GraphQLHttpException ex)   { ex.Response; }  // the reply: status, headers, body
+catch (GraphQLErrorsException ex) { ex.Errors; }    // what the server said was wrong
+catch (GraphQLException)          { }               // the query did not answer
+```
+
+The middle one is a type rather than a property on the base because a query can fail with nothing
+to report — a reply carrying no `data`, one that was not a GraphQL answer at all — and an empty
+`Errors` array on those would say the server approved when it never spoke.
 
 ## Usage
 
@@ -314,6 +348,100 @@ IQueryable<Country> countries = GraphQLQueryable.For<Country>(new MyExecutor(), 
 Sync terminals (`ToList()`, `First()`, `foreach`) block on the request the way EF Core's do.
 The async counterparts — `ToListAsync`, `ToArrayAsync`, `FirstAsync`, `SingleAsync`, `AnyAsync`,
 `CountAsync`, `LastAsync` and `AsAsyncEnumerable` — take a `CancellationToken` and don't.
+
+#### Compiling a query
+
+`[GraphQLQuery]` declares a query the compiler implements. There is one attribute and two ways to
+say what the query is, and the method says which by its own shape: a **document** on a `partial`
+method, or a **chain** as the body.
+
+```csharp
+// Written as a document — the compiler writes the body.
+[GraphQLQuery("query($code: String!) { countries(where: { code: { eq: $code } }) { name } }")]
+public static partial Task<Country[]> ByCodeAsync(
+    HttpClient client, string code, CancellationToken ct = default);
+
+// Written as a chain — the compiler replaces every call with what it compiles to.
+[GraphQLQuery]
+private static Task<Country[]> ByCodeAsync(
+    HttpClient client, string code, CancellationToken ct)
+    => client.CreateQueryable<Country>("countries")
+        .Where(c => c.Code == code)
+        .ToArrayAsync(ct);
+```
+
+Both compile to the same thing: a document literal, a variables payload written from the method's
+parameters, and a reader generated from the query's own reply. Which to write is a question of
+what the query *is* — a document says exactly what goes over the wire, a chain keeps the query in
+C# where the compiler checks it against the type it queries.
+
+The rest of this section is about the chain form, since the document form is what it compiles to.
+
+Composing a chain costs something before this library is entered at all: the compiler allocates
+an expression tree at the call site on every execution — about a microsecond and three kilobytes
+— which the provider then walks to recover values the caller already had. Isolate the chain to a
+method and mark it, and none of that happens:
+
+```csharp
+[GraphQLQuery]
+private static Task<Country[]> ByCodeAsync(
+    HttpClient client, string code, CancellationToken ct)
+    => client.CreateQueryable<Country>("countries")
+        .Where(c => c.Code == code)
+        .ToArrayAsync(ct);
+```
+
+The method is the query, written the way you would have written it anyway. What the attribute
+adds is a boundary: a chain sitting in the middle of a method binds whatever is in scope, and
+what is in scope is only known where it runs — but isolated to a method it binds that method's
+parameters, which the caller supplies. So the compiler writes the document, the variables payload
+and the read of the reply, and replaces every call to `ByCodeAsync` with them. The body never
+runs. Nothing is composed, nothing is walked, and nothing is reflected over, which is also what
+makes it run under NativeAOT unqualified.
+
+Most of a chain compiles. `Where`, `OrderBy`/`ThenBy`, `Skip`/`Take`, the result operators
+(`FirstAsync`, `SingleAsync`, `AnyAsync`, `CountAsync` and their variants), offset and cursor
+paging, and a `Select` that narrows to a named type all reach the compiled path:
+
+```csharp
+[GraphQLQuery]
+private static Task<Person> OldestNamedAsync(
+    HttpClient client, string name, CancellationToken ct)
+    => client.CreateQueryable<Person>("people")
+        .Where(p => p.Name == name)
+        .OrderByDescending(p => p.Age)
+        .FirstAsync(ct);
+```
+
+An ordering binds no value at all — which member and which direction are both in the source — so
+it is written into the payload as a constant. A page size binds one, and a parameter is where it
+comes from. A result operator decides its own page (`First` asks for one row, `Single` for two)
+and reduces what comes back, throwing exactly what the runtime throws when there is nothing or
+too much.
+
+Projections shape exactly as they do at runtime, because they *are* the projection you wrote.
+The rows come back as the queried type and your `Select` runs over them — copied into the
+generated code, compiled by your compiler, in your assembly — so a rename, a nested path, a
+constructor and a bare member all behave the same compiled as composed:
+
+```csharp
+.Select(p => new Summary { Title = p.Name, Lead = p.Team.Lead.Name })   // shapes, not maps
+```
+
+Reading the reply *into* `Summary` would have been the obvious implementation and the wrong one:
+`Title` is not `name`, and `Lead` is not a field at all, so both would come back null — a wrong
+answer rather than a failure. Nothing is matched by name.
+
+What is still bounded: one chain per method, values from that method's own parameters or
+constants, the client among the parameters, and no endpoint or filter dialect chosen in the
+options. A projection is declined only when copying it would change what it means — it reads the
+declaring type's own state, or calls something private that the generated file cannot reach. A
+chain outside all that keeps the runtime translation it would have had anyway, and `FGQL015` says
+which one and why rather than letting the attribute do nothing silently.
+
+The two forms fail differently, and deliberately. A chain the compiler declines still has a body
+to run, so `FGQL015` is a warning and the query keeps working. A document it cannot read leaves a
+`partial` method with nothing at all, so `FGQL016` is an error that says what to change.
 
 
 

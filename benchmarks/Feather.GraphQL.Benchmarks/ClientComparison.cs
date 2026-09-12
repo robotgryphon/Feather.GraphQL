@@ -1,37 +1,34 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
-using System.Text.Json.Serialization.Metadata;
 using BenchmarkDotNet.Attributes;
 using Feather.GraphQL.Http;
+using Feather.GraphQL.Linq.Filtering;
 using Feather.GraphQL.Linq.Providers;
 using Feather.GraphQL.Linq.Query;
 using GraphQL;
 using GraphQL.Client.Http;
 using GraphQL.Client.Serializer.SystemTextJson;
+// ReSharper disable UseConfigureAwaitFalse
+// ReSharper disable InconsistentNaming
 
 namespace Feather.GraphQL.Benchmarks;
 
 /// <summary>
-/// Feather against GraphQL.Client, doing the same job: post a query string, read typed data out
-/// of the reply.
+/// Every way this library has of asking the same question, and GraphQL.Client asking it too.
 /// </summary>
-/// <remarks>
-/// <para>
-/// The comparison is deliberately narrow, because it is the only part of the two libraries that
-/// is actually comparable. GraphQL.Client takes a query string; it has no LINQ translation, no
-/// projection and no filter lowering. Feather's translation is measured separately, in
-/// <c>QueryTranslation</c>, so that what it costs is visible rather than smuggled into a number
-/// labelled as a like-for-like comparison.
-/// </para>
-/// <para>
-/// Everything outside the libraries is held equal: one shared <see cref="HttpMessageHandler"/>,
-/// the same canned reply, and the same source-generated serializer contracts on both sides.
-/// </para>
-/// </remarks>
 [MemoryDiagnoser]
-public class ClientComparison
+[WarmupCount(1)]
+public partial class ClientComparison
 {
+    private const string ContinentCode = "EU";
+
     private const string Query =
-        "query { countries { name code continent { code name } } }";
+        "query { countries { name continent { name } } }";
+
+    /// <summary>The filtered document, as the declared surface would have written it.</summary>
+    private const string FilteredQuery =
+        "query($code: String!) { countries(filter: { continent: { eq: $code } }) "
+        + "{ name continent { name } } }";
 
     private CannedTransport _transport = null!;
     private HttpClient _feather = null!;
@@ -39,13 +36,15 @@ public class ClientComparison
     private GraphQLHttpClient _other = null!;
 
     /// <summary>How many rows the canned reply carries.</summary>
-    [Params(1, 100, 1000)]
+    [Params(1, 25)]
     public int Rows { get; set; }
 
     [GlobalSetup]
     public void Setup()
     {
-        _transport = new CannedTransport(Payloads.Body(Rows));
+        // Exactly the fields every row's document names, so no row is charged for reading
+        // something another row was never asked for.
+        _transport = new CannedTransport(Payloads.NestedBody(Rows));
         _feather = _transport.Client();
         _shared = _transport.Client();
 
@@ -70,8 +69,10 @@ public class ClientComparison
         _transport.Dispose();
     }
 
-    [Benchmark(Baseline = true, Description = "Feather: send + read")]
-    public async Task<int> Feather()
+    // ---- static: a document written by hand ------------------------------------------------
+
+    [Benchmark(Baseline = true, Description = "Static")]
+    public async Task<int> Static()
     {
         using var response = await _feather.SendGraphQLQueryAsync(Query);
 
@@ -79,26 +80,112 @@ public class ClientComparison
     }
 
     /// <summary>
-    /// The LINQ surface end to end: translate, post, materialize.
+    /// The same by hand, with the value bound to a variable.
     /// </summary>
     /// <remarks>
-    /// Deliberately unbounded, which is what FGQL012 is about — the row exists to measure the
-    /// cheapest chain the provider accepts, and a predicate or a page would put translation work
-    /// into a number meant to isolate everything else. The document it prints selects only the
-    /// element's scalars, so it is shorter than the one the other two rows post; the reply is the
-    /// same canned payload either way, so the read side being compared is unchanged.
+    /// Posting a parameterized document means writing the payload too, which is what
+    /// <see cref="CodeVariables"/> is. The declared row below posts the same document with a
+    /// payload the compiler wrote instead, so the pair measures what declaring saves over doing
+    /// it by hand — and both are the floor the LINQ rows are trying to reach.
     /// </remarks>
-#pragma warning disable FGQL012
-    [Benchmark(Description = "Feather: LINQ")]
-    public async Task<int> FeatherLinq()
+    [Benchmark(Description = "Static (filtered)")]
+    public async Task<int> StaticFiltered()
     {
-        var response = await _feather.CreateQueryable<Country>("countries")
-            .ToArrayAsync()
-            .ConfigureAwait(false);
+        using var response = await _feather.SendGraphQLQueryAsync(
+            FilteredQuery, new CodeVariables(ContinentCode));
 
-        return response.Length;
+        return (await response.ReadGraphQLAsync<CountriesData>()).Countries.Length;
     }
-#pragma warning restore FGQL012
+
+    /// <summary>The payload a hand-written parameterized document has to carry.</summary>
+    private readonly struct CodeVariables(string code) : IGraphQLVariables
+    {
+        public bool IsEmpty => false;
+
+        public void WriteTo(Utf8JsonWriter writer)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("continent", code);
+            writer.WriteEndObject();
+        }
+    }
+
+    // ---- declared: [GraphQLQuery] ------------------------------------------------------------
+
+    /// <summary>
+    /// The declared surface: the document is a literal and the values are parameters.
+    /// </summary>
+    /// <remarks>
+    /// Nothing is composed, so no expression tree is built and nothing is walked to recover a
+    /// value the caller already had.
+    /// </remarks>
+    [Benchmark(Description = "Feather: AOT SourceGen")]
+    public async Task<int> Declared()
+        => (await CountriesAsync(_feather, CancellationToken.None)).Length;
+
+    [GraphQLQuery(Query)]
+    private static partial Task<Country[]> CountriesAsync(
+        HttpClient client, CancellationToken cancellationToken);
+
+    /// <summary>The same filtered query, declared. Nothing is composed and nothing is walked.</summary>
+    [Benchmark(Description = "Feather: AOT SourceGen (filtered)")]
+    public async Task<int> DeclaredFiltered()
+        => (await FilteredAsync(_feather, ContinentCode, CancellationToken.None)).Length;
+
+    [GraphQLQuery(FilteredQuery)]
+    private static partial Task<Country[]> FilteredAsync(
+        HttpClient client, string code, CancellationToken cancellationToken);
+
+
+    // ---- compiled: [GraphQLQuery] over a chain -------------------------------------------------
+
+    /// <summary>
+    /// The same query written as LINQ and compiled, rather than written as a document.
+    /// </summary>
+    /// <remarks>
+    /// The row that says what the LINQ surface costs once the compiler has had it: the document is
+    /// printed at build time, the variables payload is written from the method's own parameters,
+    /// and the reply is read by a reader generated for this query's shape. Nothing is composed at
+    /// run time, so it should land on the declared rows above — the two are the same request
+    /// reached from opposite directions, and a gap between them would mean one of them is doing
+    /// work the other found a way to avoid.
+    /// </remarks>
+    [Benchmark(Description = "Feather: LINQ compiled")]
+    public async Task<int> LinqCompiled()
+        => (await CompiledAsync(_feather, CancellationToken.None)).Length;
+
+    /// <inheritdoc cref="LinqCompiled"/>
+    [Benchmark(Description = "Feather: LINQ compiled (filtered)")]
+    public async Task<int> LinqCompiledFiltered()
+        => (await CompiledFilteredAsync(_feather, ContinentCode, CancellationToken.None)).Length;
+
+    /// <summary>
+    /// The chains, isolated. They never run: every call to them is replaced by the compiled
+    /// request, and what is left here is the description the compiler wrote that request from.
+    /// </summary>
+    /// <remarks>
+    /// The projection is what makes the chain ask for the same fields the documents above name —
+    /// an unprojected chain selects the element's own scalars and would never reach into
+    /// <c>continent</c>. The filter is written against the server's input model, which is the
+    /// shape a real schema forces and the one the compiler has to be able to print.
+    /// </remarks>
+    [GraphQLQuery]
+    private static Task<Country[]> CompiledAsync(
+        HttpClient client, CancellationToken cancellationToken)
+        => client.CreateQueryable<Country>("countries")
+            .Select(c => new Country { Name = c.Name, Continent = new Continent { Name = c.Continent.Name } })
+            .ToArrayAsync(cancellationToken);
+
+    /// <inheritdoc cref="CompiledAsync"/>
+    [GraphQLQuery]
+    private static Task<Country[]> CompiledFilteredAsync(
+        HttpClient client, string code, CancellationToken cancellationToken)
+        => client.CreateQueryable<Country>("countries")
+            .Where("filter", (CountryFilter c) => c.Continent == code)
+            .Select(c => new Country { Name = c.Name, Continent = new Continent { Name = c.Continent.Name } })
+            .ToArrayAsync(cancellationToken);
+
+    // ---- the other library -------------------------------------------------------------------
 
     [Benchmark(Description = "GraphQL.Client: send + read")]
     public async Task<int> Other()

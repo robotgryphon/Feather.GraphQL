@@ -29,6 +29,10 @@
     <!-- In-repo projects reference the library by project, so the packed build props that would
          normally turn this on does not reach them. Consumers get it from the package. -->
     <InterceptorsNamespaces>$(InterceptorsNamespaces);Feather.GraphQL.Linq.Generated</InterceptorsNamespaces>
+    <!-- The property was named InterceptorsPreviewNamespaces before .NET 9, and a tool built
+         against the older compiler looks for that one instead. Setting both means the same
+         opt-in is found whichever Roslyn reads it — an IDE running its own is the usual case. -->
+    <InterceptorsPreviewNamespaces>$(InterceptorsPreviewNamespaces);Feather.GraphQL.Linq.Generated</InterceptorsPreviewNamespaces>
   </PropertyGroup>
 
 </Project>

@@ -59,6 +59,32 @@ internal static class ProjectionKey
                 return true;
             }
 
+            // A named type built and then filled: `new Summary { Title = p.Name }`. The type is
+            // part of the key where an anonymous type's is not, because two projections filling
+            // two different types with the same members are two different shapes — while two
+            // anonymous ones with the same members are the same type by construction.
+            case MemberInitExpression { NewExpression.Arguments.Count: 0 } init:
+            {
+                key.Append("new").Append(init.Type.FullName).Append('{');
+
+                for (int i = 0; i < init.Bindings.Count; i++)
+                {
+                    if (init.Bindings[i] is not MemberAssignment assignment)
+                        return false;
+
+                    if (i > 0)
+                        key.Append(',');
+
+                    key.Append(assignment.Member.Name).Append(':');
+
+                    if (!Append(key, assignment.Expression, parameter))
+                        return false;
+                }
+
+                key.Append('}');
+                return init.Bindings.Count > 0;
+            }
+
             case MemberExpression member:
                 return AppendPath(key, member, parameter);
 

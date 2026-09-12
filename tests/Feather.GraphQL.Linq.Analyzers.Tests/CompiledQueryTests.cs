@@ -1,0 +1,563 @@
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+
+namespace Feather.GraphQL.Linq.Analyzers.Tests;
+
+/// <summary>
+/// What the compiler makes of a chain isolated to a <c>[GraphQLQuery]</c> method.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The provider tests prove the compiled call sends the right bytes; these prove which chains
+/// become one. The distinction matters because declining is not a failure — the method keeps its
+/// body and the body keeps working — so the only way to tell a chain that was compiled from one
+/// that was quietly left alone is to look at what came out.
+/// </para>
+/// <para>
+/// Every declining case therefore asserts two things: that nothing was emitted, and that
+/// <c>FGQL015</c> said why. An attribute that silently does nothing is the failure mode this
+/// whole surface has to avoid.
+/// </para>
+/// </remarks>
+[TestFixture]
+public class CompiledQueryTests
+{
+    [Test]
+    public void A_chain_bound_to_the_methods_parameters_is_compiled()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country[]> ByName(HttpClient client, string name, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Where(c => c.Name == name)
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source,
+                Does.Contain("query($v0: CountryFilterInput) { countries(where: $v0) { name code } }"));
+
+            // The value arrives as an argument, so the payload is written from it directly —
+            // no tree, and nothing read back out of one.
+            Assert.That(run.Source, Does.Contain("new Variables0(name)"));
+            Assert.That(run.Source, Does.Contain("GraphQLVariableWriter.Write(writer, _0)"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>A chain that binds nothing needs no payload at all.</summary>
+    [Test]
+    public void A_chain_that_binds_nothing_posts_the_shared_empty_payload()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country[]> All(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries").ToArrayAsync(token);
+            """);
+
+        Assert.That(run.Source, Does.Contain("GraphQLNoVariables.Instance"));
+    }
+
+    /// <summary>
+    /// A method called twice is compiled once, with both calls pointing at it.
+    /// </summary>
+    [Test]
+    public void Every_call_to_a_compiled_method_is_replaced()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country[]> ByName(HttpClient client, string name, CancellationToken token)
+                => client.CreateQueryable<Country>("countries").Where(c => c.Name == name).ToArrayAsync(token);
+            """,
+            calls: """
+                _ = ByName(client, "a", default);
+                _ = ByName(client, "b", default);
+                """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(Occurrences(run.Source, "InterceptsLocationAttribute(1,"), Is.EqualTo(2));
+            Assert.That(Occurrences(run.Source, "public static async"), Is.EqualTo(1));
+        });
+    }
+
+    /// <summary>Nothing to intercept, so nothing is written — and nothing is wrong either.</summary>
+    [Test]
+    public void A_compiled_method_nobody_calls_emits_nothing()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country[]> All(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries").ToArrayAsync(token);
+            """,
+            calls: "");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Is.Null);
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A value from outside the method's parameters is not knowable where the call is, which is
+    /// the boundary the attribute exists to draw.
+    /// </summary>
+    [Test]
+    public void A_value_the_method_does_not_take_declines()
+        => Declines("""
+            private static string _name = "x";
+
+            [GraphQLQuery]
+            private static Task<Country[]> ByField(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries").Where(c => c.Name == _name).ToArrayAsync(token);
+            """);
+
+    /// <summary>
+    /// An ordering binds no value at all, so the whole sort argument is written out.
+    /// </summary>
+    /// <remarks>
+    /// Which member and which direction are both in the syntax — unlike a filter, there is
+    /// nothing left for the caller to supply, and the payload has no holes.
+    /// </remarks>
+    [Test]
+    public void An_ordering_is_written_out_whole()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country[]> Ordered(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .OrderByDescending(c => c.Name)
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("query($v0: [CountrySortInput!]) { countries(order: $v0) { name code } }"));
+            Assert.That(run.Source, Does.Contain("writer.WriteStringValue(\"DESC\")"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>A page size is a value like any other, and a parameter is where one can come from.</summary>
+    [Test]
+    public void A_page_is_bound_from_a_parameter()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country[]> Paged(HttpClient client, int size, CancellationToken token)
+                => client.CreateQueryable<Country>("countries").Take(size).ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ countries(take: $v0) { name code } }"));
+            Assert.That(run.Source, Does.Contain("new Variables0(size)"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A result operator asks the server for a page and reduces what comes back.
+    /// </summary>
+    /// <remarks>
+    /// The page size is the compiler's own decision — First means one — so it is a constant in
+    /// the payload rather than a hole.
+    /// </remarks>
+    [Test]
+    public void A_result_operator_asks_for_its_page_and_reduces_to_it()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country> One(HttpClient client, string name, CancellationToken token)
+                => client.CreateQueryable<Country>("countries").FirstAsync(c => c.Name == name, token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("take: $v1"));
+            Assert.That(run.Source, Does.Contain("writer.WriteNumberValue(1)"));
+            Assert.That(run.Source, Does.Contain("The query returned no elements."));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>A count asks the connection, so it reads no rows.</summary>
+    [Test]
+    public void A_count_reads_the_connections_own_field()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<int> HowMany(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries", o => o.Paging = PagingKind.Offset)
+                    .CountAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ countries { totalCount } }"));
+
+            // A count has no rows to model, so the generated reply is the envelope alone — and
+            // the envelope already reads the count on its way past.
+            Assert.That(run.Source, Does.Contain("ParseCount"));
+            Assert.That(run.Source, Does.Contain("\"totalCount\"u8"));
+            Assert.That(run.Source, Does.Not.Contain("_Row"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>A paged field's rows sit inside a wrapper, which the paged reader unwraps.</summary>
+    [Test]
+    public void A_paged_field_is_read_through_the_wrapper()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country[]> Paged(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries", o => o.Paging = PagingKind.Cursor)
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ countries { nodes { name code } } }"));
+
+            // The wrapper is stepped through by the generated reader rather than by a reader of
+            // this library's, so what proves it is the emitted code naming the members.
+            Assert.That(run.Source, Does.Contain("ReadGraphQLReplyAsync"));
+            Assert.That(run.Source, Does.Contain("\"nodes\"u8"));
+            Assert.That(run.Source, Does.Contain("\"items\"u8"));
+        });
+    }
+
+    /// <summary>
+    /// A projection is re-emitted, not matched by name, so a rename shapes rather than declines.
+    /// </summary>
+    /// <remarks>
+    /// The rows are read as the queried type and the projection runs over them, which is what
+    /// makes this the author's own code rather than a mapping this generator has to get right.
+    /// </remarks>
+    [Test]
+    public void A_projection_is_re_emitted_over_the_rows_it_read()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Renamed[]> Renaming(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => new Renamed { Title = c.Name })
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ countries { name } }"));
+
+            // The payload is mirrored, and the projection runs over the mirror — which its own
+            // members are named for, so the author's lambda needs no rewriting to compile.
+            Assert.That(run.Source, Does.Contain("file readonly struct Renaming_Row"));
+            Assert.That(run.Source, Does.Contain("ReadGraphQLReplyAsync"));
+            Assert.That(run.Source, Does.Contain("Title = c.Name"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>A member reached through another, which no name could have matched.</summary>
+    [Test]
+    public void A_projection_reaching_through_a_member_shapes_it()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Renamed[]> Reaching(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => new Renamed { Title = c.Continent.Name })
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ countries { continent { name } } }"));
+            Assert.That(run.Source, Does.Contain("Title = c.Continent.Name"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A type the projection names is written out in full, since the generated file does not
+    /// share the scope the projection was written in.
+    /// </summary>
+    [Test]
+    public void A_type_a_projection_names_is_written_out_in_full()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Renamed[]> Naming(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => new Renamed { Title = c.Name })
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.That(run.Source, Does.Contain("new global::Renamed"));
+    }
+
+    /// <summary>
+    /// A value the projection reads from the declaring type is not available where the call is.
+    /// </summary>
+    /// <remarks>
+    /// The same boundary the attribute draws for everything else: what the replacement can see is
+    /// what the caller handed it. A local cannot appear here at all — the body is one expression,
+    /// so there is nowhere to declare one — which leaves the declaring type's own state as the
+    /// way to reach outside it.
+    /// </remarks>
+    [Test]
+    public void A_projection_reading_the_declaring_types_state_declines()
+        => Declines("""
+            private static readonly string _suffix = "!";
+
+            [GraphQLQuery]
+            private static Task<Renamed[]> Capturing(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => new Renamed { Title = _suffix })
+                    .ToArrayAsync(token);
+            """);
+
+    /// <summary>A private helper is not reachable from the file the replacement lives in.</summary>
+    [Test]
+    public void A_projection_calling_a_private_helper_declines()
+        => Declines("""
+            private static string Shout(string value) => value;
+
+            [GraphQLQuery]
+            private static Task<Renamed[]> Shouting(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => new Renamed { Title = Shout(c.Name) })
+                    .ToArrayAsync(token);
+            """);
+
+    /// <summary>
+    /// One attribute, two kinds of query, told apart by the method's own shape.
+    /// </summary>
+    /// <remarks>
+    /// A document on a partial method is implemented from the document; a body is compiled from
+    /// the chain. Nothing about the attribute says which — the method does, which is what makes
+    /// one attribute enough. Both generators run here, because the interesting claim is that each
+    /// takes the shape that is its own and leaves the other alone.
+    /// </remarks>
+    [Test]
+    public void One_attribute_sends_each_shape_to_its_own_generator()
+    {
+        string source = """
+            using System.Linq;
+            using System.Net.Http;
+            using System.Threading;
+            using System.Threading.Tasks;
+            using Feather.GraphQL;
+            using Feather.GraphQL.Linq.Providers;
+            using Feather.GraphQL.Linq.Query;
+            using Feather.GraphQL.Linq.Analyzers.Tests;
+
+            public static partial class Snippet
+            {
+                [GraphQLQuery("query { countries { name } }")]
+                public static partial Task<Country[]> Written(HttpClient client, CancellationToken token);
+
+                [GraphQLQuery]
+                public static Task<Country[]> Composed(HttpClient client, CancellationToken token)
+                    => client.CreateQueryable<Country>("countries").Where(c => c.Name == "x").ToArrayAsync(token);
+
+                public static void Run(HttpClient client)
+                {
+                    _ = Written(client, default);
+                    _ = Composed(client, default);
+                }
+            }
+            """;
+
+        var compilation = CSharpCompilation.Create(
+            "Merged",
+            [CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Preview))],
+            SnippetReferences.All(),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        var run = CSharpGeneratorDriver
+            .Create(new GraphQLQueryMethodGenerator(), new CompiledQueryGenerator())
+            .RunGenerators(compilation)
+            .GetRunResult();
+
+        string declared = run.Results
+            .Single(x => x.Generator.GetGeneratorType() == typeof(GraphQLQueryMethodGenerator))
+            .GeneratedSources.Single().SourceText.ToString();
+
+        string compiled = run.Results
+            .Single(x => x.Generator.GetGeneratorType() == typeof(CompiledQueryGenerator))
+            .GeneratedSources.Single().SourceText.ToString();
+
+        Assert.Multiple(() =>
+        {
+            // The document became the partial method's body, and nothing intercepted its calls.
+            Assert.That(declared, Does.Contain("partial global::System.Threading.Tasks.Task"));
+            Assert.That(declared, Does.Contain("Written"));
+            Assert.That(compiled, Does.Not.Contain("Written"));
+
+            // The chain became an interceptor, and the document generator left it alone.
+            Assert.That(compiled, Does.Contain("InterceptsLocationAttribute"));
+            Assert.That(declared, Does.Not.Contain("Composed"));
+
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>An endpoint the options name is not the one the compiled call would post to.</summary>
+    [Test]
+    public void An_endpoint_in_the_options_declines()
+        => Declines("""
+            [GraphQLQuery]
+            private static Task<Country[]> Elsewhere(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries", o => o.EndpointPath = "api/graphql")
+                    .ToArrayAsync(token);
+            """);
+
+    /// <summary>
+    /// A body that also does something would have that something skipped, since the call this
+    /// replaces is the call that would have run it.
+    /// </summary>
+    [Test]
+    public void A_body_that_is_more_than_the_chain_declines()
+        => Declines("""
+            [GraphQLQuery]
+            private static Task<Country[]> Logged(HttpClient client, CancellationToken token)
+            {
+                Console.WriteLine("about to query");
+                return client.CreateQueryable<Country>("countries").ToArrayAsync(token);
+            }
+            """);
+
+    /// <summary>The client has to be the caller's, because the caller is where this runs.</summary>
+    [Test]
+    public void A_client_the_method_does_not_take_declines()
+        => Declines("""
+            private static readonly HttpClient _client = new();
+
+            [GraphQLQuery]
+            private static Task<Country[]> Fixed(HttpClient client, CancellationToken token)
+                => _client.CreateQueryable<Country>("countries").ToArrayAsync(token);
+            """);
+
+    /// <summary>Asserts a method was left to the runtime, and said so.</summary>
+    private static void Declines(string method)
+    {
+        var run = Run(method);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Is.Null, "a chain outside the compiled subset was compiled anyway");
+            Assert.That(run.Diagnostics, Is.EqualTo(new[] { "FGQL015" }));
+        });
+    }
+
+    /// <summary>What one run of the generator produced.</summary>
+    private readonly record struct Result(string? Source, string[] Diagnostics);
+
+    /// <summary>
+    /// Compiles a method and a call to it, runs the generator, and returns what came out.
+    /// </summary>
+    /// <remarks>
+    /// The call matters as much as the method: interception is by location, so a method nobody
+    /// calls produces nothing however compilable it is. The default call passes whatever the
+    /// method's parameters are in the order the cases above declare them.
+    /// </remarks>
+    private static Result Run(string method, string? calls = null)
+    {
+        string source = $$"""
+            using System;
+            using System.Linq;
+            using System.Net.Http;
+            using System.Threading;
+            using System.Threading.Tasks;
+            using Feather.GraphQL;
+            using Feather.GraphQL.Linq;
+            using Feather.GraphQL.Linq.Providers;
+            using Feather.GraphQL.Linq.Query;
+            using Feather.GraphQL.Linq.Analyzers.Tests;
+
+            public class Renamed
+            {
+                public string Title { get; set; } = "";
+            }
+
+            public static class Snippet
+            {
+                {{method}}
+
+                public static void Run(HttpClient client)
+                {
+                    {{calls ?? Calls(method)}}
+                }
+            }
+            """;
+
+        var compilation = CSharpCompilation.Create(
+            "Compiled",
+            [CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Preview))],
+            SnippetReferences.All(),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        var errors = compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .ToArray();
+
+        Assert.That(errors, Is.Empty,
+            $"the snippet did not compile: {string.Join("; ", errors.Select(e => e.ToString()))}");
+
+        var run = CSharpGeneratorDriver
+            .Create(new CompiledQueryGenerator())
+            .RunGenerators(compilation)
+            .GetRunResult();
+
+        return new Result(
+            run.GeneratedTrees.Length == 0 ? null : run.GeneratedTrees[0].ToString(),
+            [.. run.Diagnostics.Select(d => d.Id)]);
+    }
+
+    /// <summary>
+    /// A call to the method the case declared, made up from its parameters.
+    /// </summary>
+    /// <remarks>
+    /// Written rather than passed in so that each case above is only the thing it is testing.
+    /// The values are whatever binds — what they are never reaches the generated code, which
+    /// takes the parameter's name, not its value.
+    /// </remarks>
+    private static string Calls(string method)
+    {
+        // From the attribute, so a case that also declares a field is not mistaken for one.
+        int declaration = method.IndexOf("[GraphQLQuery]", StringComparison.Ordinal);
+        int open = method.IndexOf('(', declaration);
+        int close = method.IndexOf(')', open);
+
+        var arguments = method.Substring(open + 1, close - open - 1)
+            .Split(',')
+            .Select(parameter => parameter.Trim().Split(' ')[0] switch
+            {
+                "HttpClient" => "client",
+                "string" => "\"x\"",
+                "int" => "1",
+                _ => "default"
+            });
+
+        string name = method.Substring(declaration, open - declaration).Split(' ').Last();
+
+        return "_ = " + name + "(" + string.Join(", ", arguments) + ");";
+    }
+
+    private static int Occurrences(string? text, string value)
+    {
+        int count = 0;
+
+        for (int i = text?.IndexOf(value, StringComparison.Ordinal) ?? -1; i >= 0;
+            i = text!.IndexOf(value, i + value.Length, StringComparison.Ordinal))
+        {
+            count++;
+        }
+
+        return count;
+    }
+}

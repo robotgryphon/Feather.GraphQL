@@ -34,7 +34,7 @@ public class QueryPipeline
     private CannedExecutor _executor = null!;
 
     /// <summary>How many rows the canned reply carries.</summary>
-    [Params(1, 100, 1000)]
+    [Params(1, 25)]
     public int Rows { get; set; }
 
     [GlobalSetup]

@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Feather.GraphQL.Benchmarks.Interpreted</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <!-- BenchmarkDotNet refuses to run a Debug build, and is right to. -->
+    <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
+    <Optimize Condition="'$(Configuration)' == 'Release'">true</Optimize>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" />
+    <PackageReference Include="Bogus" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The library, and deliberately NOT its analyzer. That one reference is the whole
+         difference between this project and Feather.GraphQL.Benchmarks: without it nothing is
+         generated — no interceptors, no compiled queries, no projection shapers and no metadata
+         tables — so every chain here is translated, shaped and materialized at run time.
+
+         Defeating the generators case by case would prove less: a chain can be hidden from the
+         interceptor, but a shaper or a metadata table that was emitted is emitted for the whole
+         assembly and cannot be hidden from anything. -->
+    <ProjectReference Include="..\..\src\Feather.GraphQL.Linq.Providers.HttpClient\Feather.GraphQL.Linq.Providers.HttpClient.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Shared with the generated benchmarks so the two are measured over the same bytes. -->
+    <Compile Include="..\Feather.GraphQL.Benchmarks\Setup\CannedTransport.cs" Link="CannedTransport.cs" />
+  </ItemGroup>
+
+</Project>

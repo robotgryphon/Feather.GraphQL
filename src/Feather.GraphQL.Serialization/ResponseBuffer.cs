@@ -1,6 +1,6 @@
 using System.Buffers;
 
-namespace Feather.GraphQL.Http.Response;
+namespace Feather.GraphQL.Serialization;
 
 /// <summary>
 /// A reply's bytes, held in a pooled buffer for as long as it takes to read them.

@@ -12,6 +12,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Feather.GraphQL.Abstractions\Feather.GraphQL.Abstractions.csproj" />
+    <ProjectReference Include="..\Feather.GraphQL.Serialization\Feather.GraphQL.Serialization.csproj" />
   </ItemGroup>
   <ItemGroup>
     <!-- GraphQLRequest is the internal wire shape; the HttpClient transport package builds one,

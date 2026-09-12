@@ -23,6 +23,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\examples\Feather.GraphQL.Example\Feather.GraphQL.Example.csproj" />
     <ProjectReference Include="..\..\src\Feather.GraphQL.Linq.Providers.HttpClient\Feather.GraphQL.Linq.Providers.HttpClient.csproj" />
     <!-- Referenced as an analyzer so the metadata tables and interceptors land here too;
          benchmarking without them would measure a configuration nobody ships. -->

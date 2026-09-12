@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Feather.GraphQL.Serialization</RootNamespace>
+    <Description>Reading GraphQL replies: bytes, JSON and streams, for every transport.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="JetBrains.Annotations" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" PrivateAssets="All" />
+    <PackageReference Update="GitVersion.MsBuild">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- For GraphQLException, which the errors-carrying one derives from. That package knows
+         nothing of replies and takes no reference back; "a query failed" is the more fundamental
+         of the two ideas, and it is the one with no shape attached. -->
+    <ProjectReference Include="..\Feather.GraphQL.Abstractions\Feather.GraphQL.Abstractions.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The readers are shared between the transports and the LINQ execution path, and the shapes
+         they read into are not a surface anyone writes against. What generated code calls is
+         public instead, because an interceptor lands in the consumer's own assembly. -->
+    <InternalsVisibleTo Include="Feather.GraphQL.Http" />
+    <InternalsVisibleTo Include="Feather.GraphQL.Linq" />
+    <InternalsVisibleTo Include="Feather.GraphQL.Linq.Providers.HttpClient" />
+    <InternalsVisibleTo Include="Feather.GraphQL.Serialization.Tests" />
+    <InternalsVisibleTo Include="Feather.GraphQL.Tests" />
+    <InternalsVisibleTo Include="Feather.GraphQL.Linq.Tests" />
+    <InternalsVisibleTo Include="Feather.GraphQL.Linq.Providers.HttpClient.Tests" />
+    <InternalsVisibleTo Include="Feather.GraphQL.Benchmarks" />
+    <InternalsVisibleTo Include="Feather.GraphQL.Serialization.Benchmarks" />
+  </ItemGroup>
+</Project>

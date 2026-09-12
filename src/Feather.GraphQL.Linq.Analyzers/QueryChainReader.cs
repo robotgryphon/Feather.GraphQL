@@ -52,6 +52,26 @@ internal sealed class ChainFacts
     public bool HasTake;
     public bool HasLast;
 
+    /// <summary>
+    /// The keys the chain ordered by, in the order it applied them.
+    /// </summary>
+    /// <remarks>
+    /// Unlike a filter, an ordering binds no value at all: which member and which direction are
+    /// both in the syntax, so a chain that only orders has a payload the compiler can write out
+    /// whole. Captured for the callers that can use that; the document says only that an order
+    /// exists either way.
+    /// </remarks>
+    public readonly List<(LambdaExpressionSyntax Key, bool Descending)> Ordering = [];
+
+    /// <summary>True when an ordering was applied whose key could not be captured.</summary>
+    public bool HasOpaqueOrdering;
+
+    /// <summary>The expression <c>Take</c> was given, when it was given one this can see.</summary>
+    public ExpressionSyntax? TakeValue;
+
+    /// <summary>The expression <c>Skip</c> was given, when it was given one this can see.</summary>
+    public ExpressionSyntax? SkipValue;
+
     /// <summary>Whether the chain asked for a page itself, rather than a terminal asking for one.</summary>
     /// <remarks>
     /// The difference is whether the page's size is knowable here. <c>Take(n)</c> binds whatever
@@ -65,6 +85,18 @@ internal sealed class ChainFacts
     public Paging Paging;
     public string? FilterInput;
     public string? SortInput;
+
+    /// <summary>True when the chain chose where to post, or which dialect to lower filters in.</summary>
+    /// <remarks>
+    /// Neither changes a character of the document, which is why the document printer ignores
+    /// both. They matter to a caller that writes the <em>request</em> rather than the text: one
+    /// decides the URL and the other decides the operation names inside the payload, and getting
+    /// either wrong is a request that goes somewhere else or asks something else.
+    /// </remarks>
+    public bool SetsEndpoint;
+
+    /// <inheritdoc cref="SetsEndpoint"/>
+    public bool SetsFilterProvider;
 
     // Argument names, defaulted to HotChocolate's.
     public string FilterArgument = "where";
@@ -254,13 +286,25 @@ internal static class QueryChainReader
 
         if (container == WhereExtensions)
         {
-            // The overload that names the filter argument inline sets what WithGraphQLArguments
-            // would have set, so a non-literal name is a name this cannot know.
+            // A predicate written against the server's filter input rather than against the
+            // element. It is captured like any other: the runtime adds it to the same list of
+            // predicates and lowers it the same way, and what differs is only the type it is
+            // written against — which neither the lowering nor this needs to know, since both
+            // walk member paths off the lambda's own parameter.
+            bool written = false;
+
             foreach (var argument in call.ArgumentList.Arguments)
             {
-                if (argument.Expression is LambdaExpressionSyntax)
+                if (argument.Expression is LambdaExpressionSyntax lambda)
+                {
+                    facts.Predicates.Add(lambda);
+                    written = true;
                     continue;
+                }
 
+                // The overload that names the filter argument inline sets what
+                // WithGraphQLArguments would have set, so a non-literal name is one this cannot
+                // know.
                 if (model.GetConstantValue(argument.Expression, token).Value is string name)
                     facts.FilterArgument = name;
                 else
@@ -268,7 +312,12 @@ internal static class QueryChainReader
             }
 
             facts.HasFilter = true;
-            facts.HasOpaquePredicate = true;
+
+            // A predicate handed in rather than written at the call is one there is no syntax to
+            // read, which is what opaque has always meant here.
+            if (!written)
+                facts.HasOpaquePredicate = true;
+
             return Step.Applied;
         }
 
@@ -287,6 +336,7 @@ internal static class QueryChainReader
             case "ThenBy":
             case "ThenByDescending":
                 facts.HasOrdering = true;
+                Ordering(facts, call, op.Name.EndsWith("Descending", StringComparison.Ordinal));
                 return Step.Applied;
 
             case "Select":
@@ -300,10 +350,12 @@ internal static class QueryChainReader
 
             case "Skip":
                 facts.HasSkip = true;
+                facts.SkipValue = Argument(call);
                 return Step.Applied;
 
             case "Take":
                 facts.HasTake = true;
+                facts.TakeValue = Argument(call);
                 return Step.Applied;
 
             case "First": return Result(facts, ResultKind.First, call);
@@ -320,6 +372,29 @@ internal static class QueryChainReader
                 return Step.Decline;
         }
     }
+
+    /// <summary>Captures an ordering's key, or notes that it could not be.</summary>
+    /// <remarks>
+    /// A comparer overload is declined rather than recorded: it orders by something the server's
+    /// sort input cannot express, and the runtime rejects it too.
+    /// </remarks>
+    private static void Ordering(ChainFacts facts, InvocationExpressionSyntax call, bool descending)
+    {
+        if (call.ArgumentList.Arguments.Count == 1
+            && call.ArgumentList.Arguments[0].Expression is LambdaExpressionSyntax key)
+        {
+            facts.Ordering.Add((key, descending));
+            return;
+        }
+
+        facts.HasOpaqueOrdering = true;
+    }
+
+    /// <summary>The single argument a call was given, when it has exactly one.</summary>
+    private static ExpressionSyntax? Argument(InvocationExpressionSyntax call)
+        => call.ArgumentList.Arguments.Count == 1
+            ? call.ArgumentList.Arguments[0].Expression
+            : null;
 
     /// <summary>Captures a Where's predicate, or notes that it could not be.</summary>
     private static void Predicate(ChainFacts facts, InvocationExpressionSyntax call)
@@ -567,9 +642,14 @@ internal static class QueryChainReader
                     break;
 
                 // Neither changes a single character of the document: one picks the dialect the
-                // filter's *value* is written in, the other picks the URL it is posted to.
+                // filter's *value* is written in, the other picks the URL it is posted to. Both
+                // are recorded all the same, for the callers that write more than the document.
                 case "FilterProvider":
+                    facts.SetsFilterProvider = true;
+                    break;
+
                 case "EndpointPath":
+                    facts.SetsEndpoint = true;
                     break;
 
                 default:

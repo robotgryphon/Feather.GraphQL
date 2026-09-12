@@ -1,0 +1,879 @@
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using Microsoft.CodeAnalysis;
+
+namespace Feather.GraphQL.Linq.Analyzers;
+
+/// <summary>
+/// Writes a query's reply as C# types: one struct per object the payload carries, and the code
+/// that reads them.
+/// </summary>
+/// <remarks>
+/// <para>
+/// A <c>JsonSerializerContext</c> describes types, and a type is more than any one query asks
+/// for. This describes a <em>reply</em>. The selection set is known at build time, so the shape of
+/// the JSON is known exactly — which fields, in which order, nested how — and that shape can be a
+/// set of structs with a field per selected field and nothing else.
+/// </para>
+/// <para>
+/// What that buys is everything a general reader has to do and this does not: no property map to
+/// look a name up in, no contract to resolve, no members for fields the document never asked for,
+/// and no object per row — the rows are structs, so an array of them is one allocation rather than
+/// one per row plus the array.
+/// </para>
+/// <para>
+/// The emitted code calls nothing of this library's. It is <c>Utf8JsonReader</c> and the BCL:
+/// <c>Read</c>, <c>TokenType</c>, <c>ValueTextEquals</c> against a UTF-8 literal, and the getter
+/// for the field's own type. There is no layer to step through when reading it and nothing to
+/// resolve when running it — which is the whole of what compiling a reader is for.
+/// </para>
+/// </remarks>
+internal static class ResponseStructWriter
+{
+    /// <summary>
+    /// One object the reply carries, and what reading it produces.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <paramref name="Name"/> is what the reader is called and what it returns. When
+    /// <paramref name="Target"/> is null that is a generated struct, declared here with a field
+    /// per selected field; when it is set, the reader builds the caller's own type instead and no
+    /// struct is generated at all.
+    /// </para>
+    /// <para>
+    /// Which of the two is decided one level up, by whether the chain projects. A chain that does
+    /// not is asking for the queried type, so reading into anything else would mean building a row
+    /// to copy out of and throw away. A chain that does needs the payload as it arrived, because
+    /// the projection is written against those fields.
+    /// </para>
+    /// </remarks>
+    /// <remarks>
+    /// <c>Reader</c> is what the class holding this model's <c>Read</c> is called: the struct
+    /// itself when one is generated, and a name of its own when the caller's type is built
+    /// instead — one no other query sharing the file will take.
+    /// </remarks>
+    internal sealed record Model(
+        string Name,
+        IReadOnlyList<Member> Members,
+        string? Target = null,
+        string Reader = "");
+
+    /// <summary>
+    /// One field of a generated struct, as the payload carries it.
+    /// </summary>
+    /// <param name="Field">The name on the wire, which the reader compares against.</param>
+    /// <param name="Property">The name in C#, which is the queried type's own.</param>
+    /// <param name="Type">How the member is declared.</param>
+    /// <param name="Read">The expression that reads one of it, given a reader on its value.</param>
+    /// <param name="Nested">The struct it holds, when it holds one.</param>
+    /// <param name="IsList">Whether the payload carries many of it.</param>
+    /// <param name="Converter">
+    /// The converter the model declared for it, when it declared one. A member with a converter is
+    /// read through it rather than by a getter, whatever its type would otherwise have allowed.
+    /// </param>
+    /// <param name="Factory">Whether that converter is a factory, and so has to make one first.</param>
+    internal sealed record Member(
+        string Field,
+        string Property,
+        string Type,
+        string Read,
+        Model? Nested,
+        bool IsList,
+        string? Converter = null,
+        bool Factory = false);
+
+    /// <summary>
+    /// Describes the structs one reply needs, or null when its shape cannot be modelled.
+    /// </summary>
+    /// <remarks>
+    /// Declines rather than guesses, as everything else in this assembly does: a field whose type
+    /// has no read that is certainly right is a field this cannot model, and a query carrying one
+    /// keeps the reading it already had.
+    /// </remarks>
+    /// <param name="prefix">What the generated names begin with — the method's own name.</param>
+    /// <param name="element">The type the selection set was built against.</param>
+    /// <param name="selection">The fields the document asked for.</param>
+    /// <param name="direct">
+    /// True when the reader should build <paramref name="element"/> itself rather than a struct
+    /// mirroring the payload — which is what a chain with no projection is asking for, and saves
+    /// the copy a mirror would only exist to be copied out of.
+    /// </param>
+    public static Model? Describe(
+        string prefix,
+        ITypeSymbol element,
+        SelectionSetWriter.Node selection,
+        bool direct)
+        => Describe(prefix, "Row", element, selection, direct, new HashSet<string>(StringComparer.Ordinal));
+
+    private static Model? Describe(
+        string prefix,
+        string suffix,
+        ITypeSymbol element,
+        SelectionSetWriter.Node selection,
+        bool direct,
+        HashSet<string> taken)
+    {
+        // Reading into the caller's type means naming it, but the reader that builds it still
+        // needs a name of its own — and one no other query sharing the file will take.
+        string? target = direct ? Declared(element) : null;
+        string name = direct ? target! : Unique(prefix + "_" + suffix, taken);
+        string reader = direct ? Unique(prefix + "_" + suffix + "Reader", taken) : name;
+
+        // A type that cannot be built and filled is one only a mirror can be read into.
+        if (direct && !Constructible(element))
+            return null;
+        var members = new List<Member>();
+        var properties = GraphQLTypeFacts.Properties(element)
+            .ToDictionary(GraphQLTypeFacts.FieldName, x => x, StringComparer.Ordinal);
+
+        foreach (string field in selection.Order)
+        {
+            if (!properties.TryGetValue(field, out var property))
+                return null;
+
+            var child = selection[field];
+            var type = property.Type;
+
+            // A converter the model declared is how that member is read, whatever its type is and
+            // whatever the query asked for beneath it: the model said this is what reading it
+            // means, and a reader that decided otherwise would be reading something else.
+            if (Converter(property) is var (converter, factory) && converter is not null)
+            {
+                members.Add(new Member(
+                    field,
+                    property.Name,
+                    Declared(type),
+                    Converted(Local(property.Name), Declared(type)),
+                    null,
+                    false,
+                    converter,
+                    factory));
+
+                continue;
+            }
+
+            var item = GraphQLTypeFacts.ElementType(type);
+            bool list = item is not null && !GraphQLTypeFacts.IsScalar(type);
+
+            // A list is read into an array, so the member has to be declared as one. Anything
+            // else — a List, an IReadOnlyCollection — would need a conversion this does not
+            // write, and is left to the reading that can produce any shape.
+            if (list && property.Type is not IArrayTypeSymbol { Rank: 1 })
+                return null;
+
+            if (list)
+                type = item!;
+
+            if (child.Order.Count > 0)
+            {
+                var nested = Describe(prefix, property.Name, type, child, direct, taken);
+                if (nested is null)
+                    return null;
+
+                members.Add(new Member(
+                    field, property.Name, nested.Name + (list ? "[]" : ""), "", nested, list));
+
+                continue;
+            }
+
+            if (Read(type) is not { } read)
+                return null;
+
+            // Declared as the property is — an array when the payload carries many — while the
+            // read is of one element, which is what the loop over the array calls.
+            members.Add(new Member(field, property.Name, Declared(property.Type), read, null, list));
+        }
+
+        return members.Count > 0 ? new Model(name, members, target, reader) : null;
+    }
+
+    /// <summary>
+    /// The converter a model declared for a member, on the member or on its type.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is what lets a generated reader read anything the serializer could: a date in another
+    /// format, an enum by its name, a money type with a converter of its own. The model said how
+    /// that member is written and read, and copying the instruction over is the only way a second
+    /// reader can agree with the first about it.
+    /// </para>
+    /// <para>
+    /// A converter registered globally instead — on the options rather than on the model — cannot
+    /// be seen from here, and keeping those in step with what a generated reader expects is the
+    /// consumer's to do.
+    /// </para>
+    /// </remarks>
+    private static (string? Converter, bool Factory) Converter(IPropertySymbol property)
+    {
+        var declared = Attribute(property.GetAttributes())
+            ?? Attribute(GraphQLTypeFacts.UnwrapNullable(property.Type).GetAttributes());
+
+        if (declared is not INamedTypeSymbol converter)
+            return (null, false);
+
+        // A converter has to be one this can build: a factory is asked for one, and anything
+        // without a constructor taking nothing cannot be had at all.
+        if (!converter.InstanceConstructors.Any(x => x.Parameters.Length == 0
+            && x.DeclaredAccessibility == Accessibility.Public))
+            return (null, false);
+
+        for (var type = converter; type is not null; type = type.BaseType)
+        {
+            switch (type.ToDisplayString())
+            {
+                case "System.Text.Json.Serialization.JsonConverterFactory":
+                    return (converter.ToDisplayString(_qualified), true);
+
+                case string name when name.StartsWith(
+                    "System.Text.Json.Serialization.JsonConverter<", StringComparison.Ordinal):
+                    return (converter.ToDisplayString(_qualified), false);
+            }
+        }
+
+        return (null, false);
+    }
+
+    /// <summary>The type named by a <c>[JsonConverter]</c> among these attributes, if any.</summary>
+    private static ITypeSymbol? Attribute(System.Collections.Immutable.ImmutableArray<AttributeData> attributes)
+    {
+        foreach (var attribute in attributes)
+        {
+            if (attribute.AttributeClass?.ToDisplayString()
+                    == "System.Text.Json.Serialization.JsonConverterAttribute"
+                && attribute.ConstructorArguments.Length == 1
+                && attribute.ConstructorArguments[0].Value is ITypeSymbol converter)
+                return converter;
+        }
+
+        return null;
+    }
+
+    /// <summary>Reading one value through the converter held for that member.</summary>
+    private static string Converted(string local, string type)
+        => local + "Converter.Read(ref reader, typeof(" + type + "), "
+            + "global::Feather.GraphQL.Metadata.GraphQLJsonContextRegistry.Options)";
+
+    private static readonly SymbolDisplayFormat _qualified =
+        SymbolDisplayFormat.FullyQualifiedFormat.WithMiscellaneousOptions(
+            SymbolDisplayFormat.FullyQualifiedFormat.MiscellaneousOptions
+            & ~SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier);
+
+    /// <summary>
+    /// Whether the caller's own type can be built and filled by a generated reader.
+    /// </summary>
+    /// <remarks>
+    /// It needs a constructor taking nothing and a setter for every field the query asked for.
+    /// A type without them is not refused outright — the reply is mirrored in a struct instead,
+    /// and whatever the chain does next does the building.
+    /// </remarks>
+    private static bool Constructible(ITypeSymbol element)
+        => element is INamedTypeSymbol named
+            && named.InstanceConstructors.Any(x => x.Parameters.Length == 0
+                && x.DeclaredAccessibility == Accessibility.Public);
+
+    /// <summary>
+    /// The same model under a different prefix, for when two queries wanted the same one.
+    /// </summary>
+    /// <remarks>
+    /// A model is described one query at a time, so it cannot know that another method somewhere
+    /// else in the assembly is called what this one is called. Where their generated types would
+    /// land in the same file, the second is renamed here rather than by giving every query a name
+    /// nobody asked for — the method's own name is what makes generated code findable from the
+    /// code that caused it, and it is worth keeping for all but the query that clashes.
+    /// </remarks>
+    public static Model Rename(Model model, string from, string to)
+    {
+        string Renamed(string name)
+            => name.StartsWith(from + "_", StringComparison.Ordinal)
+                ? to + name.Substring(from.Length)
+                : name;
+
+        var members = new List<Member>(model.Members.Count);
+
+        foreach (var member in model.Members)
+        {
+            members.Add(member.Nested is { } nested
+                ? member with { Type = Renamed(member.Type), Nested = Rename(nested, from, to) }
+                : member);
+        }
+
+        return model with { Name = Renamed(model.Name), Reader = Renamed(model.Reader), Members = members };
+    }
+
+    /// <summary>A name nothing else generated for this query has taken.</summary>
+    private static string Unique(string name, HashSet<string> taken)
+    {
+        if (taken.Add(name))
+            return name;
+
+        for (int i = 2; ; i++)
+        {
+            string candidate = name + i;
+
+            if (taken.Add(candidate))
+                return candidate;
+        }
+    }
+
+    /// <summary>
+    /// The expression that reads one value of this type, or null when there is none.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Written against the reader standing on the value. A string takes the getter as it is —
+    /// <c>GetString</c> answers null for a null, which is what deserializing would have produced.
+    /// A number cannot: its getter throws on a null, so the token is checked first and the type's
+    /// own empty stands in, again matching what deserializing would have left behind.
+    /// </para>
+    /// <para>
+    /// The set is deliberately small and deliberately checked. A date in another format, an enum
+    /// by its name, a type with a converter of the caller's own are all things a bespoke reader
+    /// gets quietly wrong, so they are declined instead of guessed at.
+    /// </para>
+    /// </remarks>
+    private static string? Read(ITypeSymbol type)
+    {
+        bool nullable = type.NullableAnnotation == NullableAnnotation.Annotated
+            || type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T;
+
+        var underlying = GraphQLTypeFacts.UnwrapNullable(type);
+
+        string? getter = underlying.SpecialType switch
+        {
+            SpecialType.System_String => "GetString()",
+            SpecialType.System_Boolean => "GetBoolean()",
+            SpecialType.System_Byte => "GetByte()",
+            SpecialType.System_SByte => "GetSByte()",
+            SpecialType.System_Int16 => "GetInt16()",
+            SpecialType.System_Int32 => "GetInt32()",
+            SpecialType.System_Int64 => "GetInt64()",
+            SpecialType.System_UInt16 => "GetUInt16()",
+            SpecialType.System_UInt32 => "GetUInt32()",
+            SpecialType.System_UInt64 => "GetUInt64()",
+            SpecialType.System_Single => "GetSingle()",
+            SpecialType.System_Double => "GetDouble()",
+            SpecialType.System_Decimal => "GetDecimal()",
+
+            // Written as text, and the reader's own getters parse exactly the formats the
+            // serializer writes: ISO 8601 for the three date shapes, "D" for a Guid.
+            SpecialType.System_DateTime => "GetDateTime()",
+            _ => underlying.ToDisplayString() switch
+            {
+                "System.DateTimeOffset" => "GetDateTimeOffset()",
+                "System.Guid" => "GetGuid()",
+                _ => null
+            }
+        };
+
+        if (getter is null)
+            return null;
+
+        // A string's getter already answers null for a null; nothing else's does. Where the
+        // member was declared as not-null the null is forgiven rather than guarded, because
+        // deserializing into the same member would have assigned it too — the compiled path has
+        // to mean what the path it replaced meant, including about this.
+        if (getter == "GetString()")
+            return nullable ? "reader.GetString()" : "reader.GetString()!";
+
+        string empty = nullable ? "null" : "default";
+
+        // Everything but a string throws on a null rather than answering one, so the token is
+        // checked first and the type's own empty stands in — which is what deserializing into the
+        // same member would have left behind.
+        const string nullToken = "global::System.Text.Json.JsonTokenType.Null";
+
+        return $"reader.TokenType == {nullToken} ? {empty} : reader.{getter}";
+    }
+
+    /// <summary>How a leaf member is declared: as the queried type declares it.</summary>
+    private static string Declared(ITypeSymbol type)
+        => type.ToDisplayString(
+            SymbolDisplayFormat.FullyQualifiedFormat.WithMiscellaneousOptions(
+                SymbolDisplayFormat.FullyQualifiedFormat.MiscellaneousOptions
+                | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier
+                | SymbolDisplayMiscellaneousOptions.UseSpecialTypes));
+
+    /// <summary>
+    /// Writes every struct the reply needs, innermost first, and the reply itself.
+    /// </summary>
+    /// <remarks>
+    /// A null model is a reply with no rows to read — a counting query, which asks the connection
+    /// how many there are and selects none of them. It still has an envelope, and that is all this
+    /// writes for it.
+    /// </remarks>
+    /// <remarks>
+    /// <c>single</c> is true when the root field answers with one object rather than a list of
+    /// them. Which it is cannot be told from the reply — a connection is an object too — but it
+    /// can be told from what the method returns, and that is settled before any reply exists.
+    /// </remarks>
+    public static void Write(StringBuilder builder, Model? model, string prefix, bool single = false)
+    {
+        if (model is not null)
+            Structs(builder, model);
+
+        Reply(builder, model, prefix, single);
+    }
+
+    private static void Structs(StringBuilder builder, Model model)
+    {
+        foreach (var member in model.Members)
+        {
+            if (member.Nested is { } nested)
+                Structs(builder, nested);
+        }
+
+        // Reading into the caller's own type declares nothing; only the reader is generated.
+        if (model.Target is not null)
+        {
+            builder.Append("    /// <summary>Reads one <c>").Append(model.Name)
+                .Append("</c> out of the reply, field by field.</summary>\n")
+                .Append("    file static class ").Append(model.Reader).Append('\n')
+                .Append("    {\n");
+
+            Converters(builder, model);
+            Reader(builder, model);
+
+            builder.Append("    }\n\n");
+
+            return;
+        }
+
+        builder.Append("    /// <summary>One <c>").Append(model.Name)
+            .Append("</c>, with a field for each the query asked for and none besides.</summary>\n")
+            .Append("    file readonly struct ").Append(model.Name).Append('\n')
+            .Append("    {\n");
+
+        foreach (var member in model.Members)
+        {
+            builder.Append("        public readonly ").Append(member.Type).Append(' ')
+                .Append(member.Property).Append(";\n");
+        }
+
+        Constructor(builder, model);
+        Converters(builder, model);
+        Reader(builder, model);
+
+        builder.Append("    }\n\n");
+    }
+
+    private static void Constructor(StringBuilder builder, Model model)
+    {
+        builder.Append('\n').Append("        public ").Append(model.Name).Append('(')
+            .Append(string.Join(", ", model.Members.Select(x => x.Type + " " + Local(x))))
+            .Append(")\n        {\n");
+
+        foreach (var member in model.Members)
+            builder.Append("            ").Append(member.Property).Append(" = ").Append(Local(member)).Append(";\n");
+
+        builder.Append("        }\n");
+    }
+
+    /// <summary>
+    /// Declares the converters this model reads through, built once rather than per row.
+    /// </summary>
+    /// <remarks>
+    /// A factory is asked for its converter here too, for the same reason: whatever it costs to
+    /// make one, it costs once for the assembly rather than once for every row of every reply.
+    /// </remarks>
+    private static void Converters(StringBuilder builder, Model model)
+    {
+        foreach (var member in model.Members)
+        {
+            if (member.Converter is not { } converter)
+                continue;
+
+            builder.Append("\n        private static readonly global::System.Text.Json.Serialization")
+                .Append(".JsonConverter<").Append(member.Type).Append("> ").Append(Local(member))
+                .Append("Converter =\n            ");
+
+            if (member.Factory)
+            {
+                builder.Append("(global::System.Text.Json.Serialization.JsonConverter<")
+                    .Append(member.Type).Append(">)new ").Append(converter)
+                    .Append("().CreateConverter(\n                typeof(").Append(member.Type)
+                    .Append("), global::Feather.GraphQL.Metadata.GraphQLJsonContextRegistry.Options)!;\n");
+            }
+            else
+            {
+                builder.Append("new ").Append(converter).Append("();\n");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reads one of these, from its <c>{</c> to its <c>}</c>.
+    /// </summary>
+    /// <remarks>
+    /// Values land in locals and the struct is built at the end, rather than being assigned into
+    /// as they arrive: a server writes a reply's fields in whatever order it likes, and a struct
+    /// with readonly fields cannot be filled piecemeal anyway.
+    /// </remarks>
+    private static void Reader(StringBuilder builder, Model model)
+    {
+        builder.Append('\n')
+            .Append("        /// <summary>Reads one, from its opening brace to its closing one.</summary>\n")
+            .Append("        public static ").Append(model.Name)
+            .Append(" Read(ref global::System.Text.Json.Utf8JsonReader reader)\n")
+            .Append("        {\n");
+
+        foreach (var member in model.Members)
+        {
+            builder.Append("            ").Append(member.Type).Append(' ').Append(Local(member))
+                .Append(" = default").Append(member.Type.EndsWith("?", StringComparison.Ordinal)
+                    || !member.Type.EndsWith("[]", StringComparison.Ordinal) ? "" : "").Append("!;\n");
+        }
+
+        builder.Append('\n')
+            .Append("            while (reader.Read() && reader.TokenType == ")
+            .Append("global::System.Text.Json.JsonTokenType.PropertyName)\n")
+            .Append("            {\n");
+
+        bool first = true;
+
+        foreach (var member in model.Members)
+        {
+            builder.Append("                ").Append(first ? "if" : "else if")
+                .Append(" (reader.ValueTextEquals(\"").Append(member.Field).Append("\"u8))\n")
+                .Append("                {\n")
+                .Append("                    reader.Read();\n");
+
+            first = false;
+
+            if (member.Nested is { } nested)
+                Nested(builder, member, nested);
+            else if (member.IsList)
+                Scalars(builder, member);
+            else
+                builder.Append("                    ").Append(Local(member)).Append(" = ").Append(member.Read).Append(";\n");
+
+            builder.Append("                }\n");
+        }
+
+        builder.Append("                else\n")
+            .Append("                {\n")
+            .Append("                    reader.Read();\n")
+            .Append("                    reader.Skip();\n")
+            .Append("                }\n")
+            .Append("            }\n\n");
+
+        if (model.Target is null)
+        {
+            builder.Append("            return new ").Append(model.Name).Append('(')
+                .Append(string.Join(", ", model.Members.Select(Local))).Append(");\n");
+        }
+        else
+        {
+            // The caller's type, built and filled: an initializer rather than a constructor,
+            // because what it takes is its own business and its setters are what we know.
+            builder.Append("            return new ").Append(model.Target).Append("\n")
+                .Append("            {\n");
+
+            for (int i = 0; i < model.Members.Count; i++)
+            {
+                builder.Append("                ").Append(model.Members[i].Property).Append(" = ")
+                    .Append(Local(model.Members[i]))
+                    .Append(i == model.Members.Count - 1 ? "" : ",").Append("\n");
+            }
+
+            builder.Append("            };\n");
+        }
+
+        builder.Append("        }\n");
+    }
+
+
+
+    /// <summary>
+    /// Reads a list of scalars — a leaf on the wire, but an array all the same.
+    /// </summary>
+    /// <remarks>
+    /// The loop advances onto each element itself, so the read is called with the reader already
+    /// standing on the value rather than on a name.
+    /// </remarks>
+    private static void Scalars(StringBuilder builder, Member member)
+    {
+        string element = member.Type.EndsWith("[]", StringComparison.Ordinal)
+            ? member.Type.Substring(0, member.Type.Length - 2)
+            : member.Type;
+
+        builder.Append("                    var ").Append(Local(member)).Append("Items = ")
+            .Append("new global::System.Collections.Generic.List<").Append(element).Append(">();\n\n")
+            .Append("                    while (reader.Read() && reader.TokenType != ")
+            .Append("global::System.Text.Json.JsonTokenType.EndArray)\n")
+            .Append("                        ").Append(Local(member)).Append("Items.Add(")
+            .Append(member.Read).Append(");\n\n")
+            .Append("                    ").Append(Local(member)).Append(" = ")
+            .Append(Local(member)).Append("Items.ToArray();\n");
+    }
+
+    /// <summary>Reads a nested object, or a list of them, into its own struct.</summary>
+    private static void Nested(StringBuilder builder, Member member, Model nested)
+    {
+        if (!member.IsList)
+        {
+            builder.Append("                    if (reader.TokenType == ")
+                .Append("global::System.Text.Json.JsonTokenType.StartObject)\n")
+                .Append("                        ").Append(Local(member)).Append(" = ")
+                .Append(nested.Reader).Append(".Read(ref reader);\n")
+                .Append("                    else\n")
+                .Append("                        reader.Skip();\n");
+
+            return;
+        }
+
+        builder.Append("                    var ").Append(Local(member)).Append("Items = ")
+            .Append("new global::System.Collections.Generic.List<").Append(nested.Name).Append(">();\n\n")
+            .Append("                    while (reader.Read() && reader.TokenType != ")
+            .Append("global::System.Text.Json.JsonTokenType.EndArray)\n")
+            .Append("                    {\n")
+            .Append("                        if (reader.TokenType == ")
+            .Append("global::System.Text.Json.JsonTokenType.StartObject)\n")
+            .Append("                            ").Append(Local(member)).Append("Items.Add(")
+            .Append(nested.Reader).Append(".Read(ref reader));\n")
+            .Append("                        else\n")
+            .Append("                            reader.Skip();\n")
+            .Append("                    }\n\n")
+            .Append("                    ").Append(Local(member)).Append(" = ")
+            .Append(Local(member)).Append("Items.ToArray();\n");
+    }
+
+    /// <summary>
+    /// Writes the reply itself: the rows, and what the envelope said about them.
+    /// </summary>
+    /// <remarks>
+    /// The envelope is written out here rather than called into, so a generated reader depends on
+    /// nothing at run time. It is the same walk every reply needs — <c>data</c>, its single field,
+    /// the connection a paged field wraps its rows in — and it is short enough to read.
+    /// </remarks>
+    private static void Reply(StringBuilder builder, Model? model, string prefix, bool single)
+    {
+        string name = prefix + "_Reply";
+        string rowType = model?.Name ?? "";
+
+        if (single && model is not null)
+        {
+            Single(builder, model, name, prefix);
+
+            return;
+        }
+
+        builder.Append("    /// <summary>One reply to <c>").Append(prefix)
+            .Append("</c>: ").Append(model is null ? "what the envelope said." : "its rows, and what the envelope said.")
+            .Append("</summary>\n")
+            .Append("    file readonly struct ").Append(name).Append('\n')
+            .Append("    {\n");
+
+        if (model is not null)
+            builder.Append("        public readonly ").Append(rowType).Append("[] Rows;\n");
+
+        builder.Append("        public readonly bool HasData;\n")
+            .Append("        public readonly bool HasErrors;\n")
+            .Append("        public readonly long? TotalCount;\n\n")
+            .Append("        public ").Append(name).Append('(')
+            .Append(model is null ? "" : rowType + "[] rows, ")
+            .Append("bool hasData, bool hasErrors, long? totalCount)\n")
+            .Append("        {\n");
+
+        if (model is not null)
+            builder.Append("            Rows = rows;\n");
+
+        builder
+            .Append("            HasData = hasData;\n")
+            .Append("            HasErrors = hasErrors;\n")
+            .Append("            TotalCount = totalCount;\n")
+            .Append("        }\n\n")
+            .Append("        /// <summary>Reads a whole reply, in one pass over its bytes.</summary>\n")
+            .Append("        public static ").Append(name)
+            .Append(" Read(global::System.ReadOnlySpan<byte> json)\n")
+            .Append("        {\n")
+            .Append("            var reader = new global::System.Text.Json.Utf8JsonReader(json);\n");
+
+        if (model is not null)
+        {
+            builder.Append("            var rows = new global::System.Collections.Generic.List<")
+                .Append(rowType).Append(">();\n");
+        }
+
+        builder.Append("            bool hasData = false;\n")
+            .Append("            bool hasErrors = false;\n")
+            .Append("            long? totalCount = null;\n\n")
+            .Append("            if (!reader.Read() || reader.TokenType != ")
+            .Append("global::System.Text.Json.JsonTokenType.StartObject)\n")
+            .Append("                return new ").Append(name)
+            .Append(model is null ? "(false, false, null);\n\n" : "([], false, false, null);\n\n")
+            .Append("            while (reader.Read() && reader.TokenType == ")
+            .Append("global::System.Text.Json.JsonTokenType.PropertyName)\n")
+            .Append("            {\n")
+            .Append("                bool isData = reader.ValueTextEquals(\"data\"u8);\n")
+            .Append("                bool isErrors = !isData && reader.ValueTextEquals(\"errors\"u8);\n\n")
+            .Append("                reader.Read();\n\n")
+            .Append("                if (isErrors)\n")
+            .Append("                {\n")
+            .Append("                    // Present but empty is not a failure, which is what the spec says it means.\n")
+            .Append("                    if (reader.TokenType == global::System.Text.Json.JsonTokenType.StartArray)\n")
+            .Append("                    {\n")
+            .Append("                        var peek = reader;\n")
+            .Append("                        hasErrors = peek.Read() && peek.TokenType != ")
+            .Append("global::System.Text.Json.JsonTokenType.EndArray;\n")
+            .Append("                    }\n\n")
+            .Append("                    reader.Skip();\n")
+            .Append("                    continue;\n")
+            .Append("                }\n\n")
+            .Append("                if (!isData || reader.TokenType != ")
+            .Append("global::System.Text.Json.JsonTokenType.StartObject)\n")
+            .Append("                {\n")
+            .Append("                    reader.Skip();\n")
+            .Append("                    continue;\n")
+            .Append("                }\n\n")
+            .Append("                hasData = true;\n\n")
+            .Append("                // data's single member, whatever the field was named.\n")
+            .Append("                if (!reader.Read() || reader.TokenType != ")
+            .Append("global::System.Text.Json.JsonTokenType.PropertyName)\n")
+            .Append("                    continue;\n\n")
+            .Append("                reader.Read();\n\n")
+            .Append("                // A field that pages wraps its rows in a connection; one that\n")
+            .Append("                // counts carries the count and no rows at all.\n")
+            .Append("                if (reader.TokenType == global::System.Text.Json.JsonTokenType.StartObject)\n")
+            .Append("                {\n")
+            .Append("                    while (reader.Read() && reader.TokenType == ")
+            .Append("global::System.Text.Json.JsonTokenType.PropertyName)\n")
+            .Append("                    {\n")
+            .Append("                        bool isRows = reader.ValueTextEquals(\"nodes\"u8)\n")
+            .Append("                            || reader.ValueTextEquals(\"items\"u8);\n")
+            .Append("                        bool isCount = !isRows && reader.ValueTextEquals(\"totalCount\"u8);\n\n")
+            .Append("                        reader.Read();\n\n")
+            .Append("                        if (isRows && reader.TokenType == ")
+            .Append("global::System.Text.Json.JsonTokenType.StartArray)\n")
+            .Append(model is null
+                ? "                            reader.Skip();\n"
+                : "                            ReadRows(ref reader, rows);\n")
+            .Append("                        else if (isCount && reader.TokenType == ")
+            .Append("global::System.Text.Json.JsonTokenType.Number)\n")
+            .Append("                            totalCount = reader.GetInt64();\n")
+            .Append("                        else\n")
+            .Append("                            reader.Skip();\n")
+            .Append("                    }\n\n")
+            .Append("                    continue;\n")
+            .Append("                }\n\n")
+            .Append("                if (reader.TokenType == global::System.Text.Json.JsonTokenType.StartArray)\n")
+            .Append(model is null
+                ? "                    reader.Skip();\n"
+                : "                    ReadRows(ref reader, rows);\n")
+            .Append("                else\n")
+            .Append("                    reader.Skip();\n")
+            .Append("            }\n\n")
+            .Append("            return new ").Append(name)
+            .Append(model is null
+                ? "(hasData, hasErrors, totalCount);\n"
+                : "(rows.ToArray(), hasData, hasErrors, totalCount);\n")
+            .Append("        }\n\n");
+
+        if (model is null)
+        {
+            builder.Append("    }\n\n");
+
+            return;
+        }
+
+        builder.Append("        /// <summary>Reads the rows of an array the reader is standing on.</summary>\n")
+            .Append("        private static void ReadRows(\n")
+            .Append("            ref global::System.Text.Json.Utf8JsonReader reader,\n")
+            .Append("            global::System.Collections.Generic.List<").Append(model.Name).Append("> rows)\n")
+            .Append("        {\n")
+            .Append("            while (reader.Read() && reader.TokenType != ")
+            .Append("global::System.Text.Json.JsonTokenType.EndArray)\n")
+            .Append("            {\n")
+            .Append("                // A row a server could not resolve arrives as a null.\n")
+            .Append("                if (reader.TokenType == global::System.Text.Json.JsonTokenType.StartObject)\n")
+            .Append("                    rows.Add(").Append(model.Reader).Append(".Read(ref reader));\n")
+            .Append("                else\n")
+            .Append("                    reader.Skip();\n")
+            .Append("            }\n")
+            .Append("        }\n")
+            .Append("    }\n\n");
+    }
+
+    /// <summary>
+    /// Writes the reply of a field that answers with one object rather than a list.
+    /// </summary>
+    /// <remarks>
+    /// The same envelope, minus everything about arrays: no connection to step into, since a field
+    /// that pages answers with a list, and no rows to accumulate. What <c>data</c>'s single member
+    /// holds is the row.
+    /// </remarks>
+    private static void Single(StringBuilder builder, Model model, string name, string prefix)
+    {
+        builder.Append("    /// <summary>One reply to <c>").Append(prefix)
+            .Append("</c>: its row, and what the envelope said.</summary>\n")
+            .Append("    file readonly struct ").Append(name).Append('\n')
+            .Append("    {\n")
+            .Append("        public readonly ").Append(model.Name).Append(" Row;\n")
+            .Append("        public readonly bool HasData;\n")
+            .Append("        public readonly bool HasErrors;\n\n")
+            .Append("        public ").Append(name).Append('(').Append(model.Name)
+            .Append(" row, bool hasData, bool hasErrors)\n")
+            .Append("        {\n")
+            .Append("            Row = row;\n")
+            .Append("            HasData = hasData;\n")
+            .Append("            HasErrors = hasErrors;\n")
+            .Append("        }\n\n")
+            .Append("        /// <summary>Reads a whole reply, in one pass over its bytes.</summary>\n")
+            .Append("        public static ").Append(name)
+            .Append(" Read(global::System.ReadOnlySpan<byte> json)\n")
+            .Append("        {\n")
+            .Append("            var reader = new global::System.Text.Json.Utf8JsonReader(json);\n")
+            .Append("            ").Append(model.Name).Append(" row = default!;\n")
+            .Append("            bool hasData = false;\n")
+            .Append("            bool hasErrors = false;\n\n")
+            .Append("            if (!reader.Read() || reader.TokenType != ")
+            .Append("global::System.Text.Json.JsonTokenType.StartObject)\n")
+            .Append("                return new ").Append(name).Append("(row, false, false);\n\n")
+            .Append("            while (reader.Read() && reader.TokenType == ")
+            .Append("global::System.Text.Json.JsonTokenType.PropertyName)\n")
+            .Append("            {\n")
+            .Append("                bool isData = reader.ValueTextEquals(\"data\"u8);\n")
+            .Append("                bool isErrors = !isData && reader.ValueTextEquals(\"errors\"u8);\n\n")
+            .Append("                reader.Read();\n\n")
+            .Append("                if (isErrors)\n")
+            .Append("                {\n")
+            .Append("                    // Present but empty is not a failure, which is what the spec says it means.\n")
+            .Append("                    if (reader.TokenType == global::System.Text.Json.JsonTokenType.StartArray)\n")
+            .Append("                    {\n")
+            .Append("                        var peek = reader;\n")
+            .Append("                        hasErrors = peek.Read() && peek.TokenType != ")
+            .Append("global::System.Text.Json.JsonTokenType.EndArray;\n")
+            .Append("                    }\n\n")
+            .Append("                    reader.Skip();\n")
+            .Append("                    continue;\n")
+            .Append("                }\n\n")
+            .Append("                if (!isData || reader.TokenType != ")
+            .Append("global::System.Text.Json.JsonTokenType.StartObject)\n")
+            .Append("                {\n")
+            .Append("                    reader.Skip();\n")
+            .Append("                    continue;\n")
+            .Append("                }\n\n")
+            .Append("                hasData = true;\n\n")
+            .Append("                // data's single member, whatever the field was named.\n")
+            .Append("                if (!reader.Read() || reader.TokenType != ")
+            .Append("global::System.Text.Json.JsonTokenType.PropertyName)\n")
+            .Append("                    continue;\n\n")
+            .Append("                reader.Read();\n\n")
+            .Append("                // A field with nothing to answer with sends a null.\n")
+            .Append("                if (reader.TokenType == global::System.Text.Json.JsonTokenType.StartObject)\n")
+            .Append("                    row = ").Append(model.Reader).Append(".Read(ref reader);\n")
+            .Append("                else\n")
+            .Append("                    reader.Skip();\n")
+            .Append("            }\n\n")
+            .Append("            return new ").Append(name).Append("(row, hasData, hasErrors);\n")
+            .Append("        }\n")
+            .Append("    }\n\n");
+    }
+
+    /// <summary>The local a member's value is read into before the struct is built.</summary>
+    private static string Local(Member member) => Local(member.Property);
+
+    /// <inheritdoc cref="Local(Member)"/>
+    private static string Local(string property)
+        => "_" + char.ToLowerInvariant(property[0]) + property.Substring(1);
+}

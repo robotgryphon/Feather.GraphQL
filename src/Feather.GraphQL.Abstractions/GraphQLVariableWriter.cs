@@ -16,7 +16,58 @@ namespace Feather.GraphQL;
 [PublicAPI]
 public static class GraphQLVariableWriter
 {
-    /// <summary>Writes one value.</summary>
+    /// <summary>Writes a string.</summary>
+    /// <remarks>
+    /// The typed overloads exist so that generated code, which knows each value's type, never
+    /// boxes one to write it. The <see cref="object"/> form below is the fallback for a type
+    /// none of them covers.
+    /// </remarks>
+    public static void Write(Utf8JsonWriter writer, string? value)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        if (value is null)
+            writer.WriteNullValue();
+        else
+            writer.WriteStringValue(value);
+    }
+
+    /// <summary>Writes a 32-bit integer.</summary>
+    public static void Write(Utf8JsonWriter writer, int value)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        writer.WriteNumberValue(value);
+    }
+
+    /// <summary>Writes a 64-bit integer.</summary>
+    public static void Write(Utf8JsonWriter writer, long value)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        writer.WriteNumberValue(value);
+    }
+
+    /// <summary>Writes a boolean.</summary>
+    public static void Write(Utf8JsonWriter writer, bool value)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        writer.WriteBooleanValue(value);
+    }
+
+    /// <summary>Writes a double.</summary>
+    public static void Write(Utf8JsonWriter writer, double value)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        writer.WriteNumberValue(value);
+    }
+
+    /// <summary>Writes a decimal.</summary>
+    public static void Write(Utf8JsonWriter writer, decimal value)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        writer.WriteNumberValue(value);
+    }
+
+    /// <summary>Writes a value of any other type.</summary>
     public static void Write(Utf8JsonWriter writer, object? value)
     {
         ArgumentNullException.ThrowIfNull(writer);

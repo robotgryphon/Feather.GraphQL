@@ -6,8 +6,13 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace Feather.GraphQL.Linq.Analyzers;
 
-/// <summary>One value the runtime has to supply, and the type it arrives as.</summary>
-internal sealed record FilterHole(string Type);
+/// <summary>One value the filter waits for, and the type it arrives as.</summary>
+/// <param name="Type">How the value is declared where it is filled in.</param>
+/// <param name="Binding">
+/// The expression the value is read from, when a caller asked for the leaves to be bound at
+/// compile time; null when the runtime supplies them from the expression tree.
+/// </param>
+internal sealed record FilterHole(string Type, string? Binding = null);
 
 /// <summary>
 /// A filter's shape, printed at compile time, with its values left as holes.
@@ -46,10 +51,20 @@ internal sealed class FilterSkeletonModel(string body, IReadOnlyList<FilterHole>
 internal static class FilterSkeleton
 {
     /// <summary>Renders the chain's predicates, or null when any of them is outside the subset.</summary>
+    /// <param name="predicates">The Wheres the chain applied, in the order it applied them.</param>
+    /// <param name="model">The semantic model the predicates were written in.</param>
+    /// <param name="token">Cancels the analysis.</param>
+    /// <param name="bind">
+    /// Where a comparison's value comes from, for a caller that means to fill the leaves at
+    /// compile time rather than let the runtime read them out of the expression tree. Returning
+    /// null declines the whole filter, which is how a caller says that a value it cannot see the
+    /// origin of is not one it can bind.
+    /// </param>
     public static FilterSkeletonModel? From(
         IReadOnlyList<LambdaExpressionSyntax> predicates,
         SemanticModel model,
-        CancellationToken token)
+        CancellationToken token,
+        Func<ExpressionSyntax, string?>? bind = null)
     {
         if (predicates.Count == 0)
             return null;
@@ -62,7 +77,7 @@ internal static class FilterSkeleton
                 || model.GetSymbolInfo(predicate, token).Symbol is not IMethodSymbol { Parameters.Length: 1 } lambda)
                 return null;
 
-            if (!Collect(body, lambda.Parameters[0], model, token, clauses))
+            if (!Collect(body, lambda.Parameters[0], model, token, bind, clauses))
                 return null;
         }
 
@@ -70,7 +85,8 @@ internal static class FilterSkeleton
     }
 
     /// <summary>One comparison: a field path, an operation, and the value that goes under it.</summary>
-    private sealed record Clause(IReadOnlyList<string> Path, string Operation, string ValueType);
+    private sealed record Clause(
+        IReadOnlyList<string> Path, string Operation, string ValueType, string? Binding);
 
     /// <summary>
     /// Flattens a conjunction into its comparisons, in source order.
@@ -85,19 +101,20 @@ internal static class FilterSkeleton
         IParameterSymbol parameter,
         SemanticModel model,
         CancellationToken token,
+        Func<ExpressionSyntax, string?>? bind,
         List<Clause> clauses)
     {
         switch (node)
         {
             case ParenthesizedExpressionSyntax parenthesized:
-                return Collect(parenthesized.Expression, parameter, model, token, clauses);
+                return Collect(parenthesized.Expression, parameter, model, token, bind, clauses);
 
             case BinaryExpressionSyntax { RawKind: (int)SyntaxKind.LogicalAndExpression } and:
-                return Collect(and.Left, parameter, model, token, clauses)
-                    && Collect(and.Right, parameter, model, token, clauses);
+                return Collect(and.Left, parameter, model, token, bind, clauses)
+                    && Collect(and.Right, parameter, model, token, bind, clauses);
 
             case BinaryExpressionSyntax binary when Operation(binary.Kind()) is { } operation:
-                return Comparison(binary, operation, parameter, model, token, clauses);
+                return Comparison(binary, operation, parameter, model, token, bind, clauses);
 
             default:
                 return false;
@@ -110,6 +127,7 @@ internal static class FilterSkeleton
         IParameterSymbol parameter,
         SemanticModel model,
         CancellationToken token,
+        Func<ExpressionSyntax, string?>? bind,
         List<Clause> clauses)
     {
         // Only the member-on-the-left orientation. The flipped form is legal and the runtime
@@ -130,7 +148,12 @@ internal static class FilterSkeleton
         if (GraphQLTypeFacts.UnwrapNullable(valueType).TypeKind == TypeKind.Enum)
             return false;
 
-        clauses.Add(new Clause(path, operation, Display(valueType)));
+        string? binding = null;
+
+        if (bind is not null && (binding = bind(binary.Right)) is null)
+            return false;
+
+        clauses.Add(new Clause(path, operation, Display(valueType), binding));
         return true;
     }
 
@@ -272,7 +295,7 @@ internal static class FilterSkeleton
                     .Append(holes.Count).Append(");\n")
                     .Append(indent).Append("writer.WriteEndObject();\n");
 
-                holes.Add(new FilterHole(clause.ValueType));
+                holes.Add(new FilterHole(clause.ValueType, clause.Binding));
                 continue;
             }
 

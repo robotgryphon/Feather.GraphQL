@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using Bogus;
@@ -22,7 +23,15 @@ namespace Feather.GraphQL.Benchmarks;
 /// </remarks>
 public static class Payloads
 {
-    /// <summary>Row counts every size-sensitive benchmark runs at.</summary>
+    /// <summary>
+    /// The row counts size-sensitive benchmarks run at unless they say otherwise.
+    /// </summary>
+    /// <remarks>
+    /// A default rather than a restriction: these are built up front because most classes ask for
+    /// them, and <see cref="Body"/> builds any other size on first use. A class free to choose its
+    /// own <c>[Params]</c> and then failing in <c>GlobalSetup</c> for choosing them is a trap, and
+    /// the failure reads as eleven dead rows in a table rather than as one missing payload.
+    /// </remarks>
     public static readonly int[] Sizes = [1, 100, 1000];
 
     private static readonly string[] _continentCodes = ["AF", "AN", "AS", "EU", "NA", "OC", "SA"];
@@ -39,15 +48,55 @@ public static class Payloads
     };
 
     // Declared before the bodies: static field initializers run in order, and Build reads these.
-    private static readonly Dictionary<int, byte[]> _bodies =
-        Sizes.ToDictionary(size => size, Build);
+    private static readonly ConcurrentDictionary<int, byte[]> _bodies =
+        new(Sizes.ToDictionary(size => size, Build));
 
-    /// <summary>A full GraphQL reply of <paramref name="rows"/> countries, as UTF-8.</summary>
-    public static byte[] Body(int rows) => _bodies[rows];
+    /// <summary>
+    /// A full GraphQL reply of <paramref name="rows"/> countries, as UTF-8.
+    /// </summary>
+    /// <remarks>
+    /// Built once per size and kept, so no benchmark pays to construct one — including a size
+    /// outside <see cref="Sizes"/>, which is built the first time it is asked for. That happens in
+    /// <c>GlobalSetup</c>, outside anything being measured.
+    /// </remarks>
+    public static byte[] Body(int rows) => _bodies.GetOrAdd(rows, Build);
 
     /// <summary>The same reply's <c>data</c> field, already parsed.</summary>
     public static JsonElement Data(int rows)
-        => JsonDocument.Parse(_bodies[rows]).RootElement.GetProperty("data");
+        => JsonDocument.Parse(Body(rows)).RootElement.GetProperty("data");
+
+    /// <summary>
+    /// A reply shaped as <c>{ name continent { name } }</c> asks for: a scalar, and one reached
+    /// through an object.
+    /// </summary>
+    /// <remarks>
+    /// What <see cref="ClientComparison"/> measures over, so that every row there asks for the same
+    /// fields and is sent the same ones back. A payload holding more than the documents ask for
+    /// would be read by whichever client deserializes the whole object and skipped by whichever
+    /// reads what its document named — which is a difference in what the rows were told to do, not
+    /// in how well they do it.
+    /// </remarks>
+    public static byte[] NestedBody(int rows) => _nested.GetOrAdd(rows, BuildNested);
+
+    private static readonly ConcurrentDictionary<int, byte[]> _nested = new();
+
+    private static byte[] BuildNested(int rows)
+    {
+        var builder = new StringBuilder("{\"data\":{\"countries\":[");
+        var source = Generate(rows);
+
+        for (int i = 0; i < source.Length; i++)
+        {
+            if (i > 0)
+                builder.Append(',');
+
+            builder.Append("{\"name\":").Append(JsonSerializer.Serialize(source[i].Name))
+                .Append(",\"continent\":{\"name\":")
+                .Append(JsonSerializer.Serialize(source[i].Continent.Name)).Append("}}");
+        }
+
+        return Encoding.UTF8.GetBytes(builder.Append("]}}").ToString());
+    }
 
     /// <summary>The rows a reply of this size carries, as objects.</summary>
     public static Country[] Rows(int rows) => Generate(rows);

@@ -45,4 +45,43 @@ internal static class GraphQLDiagnostics
         description: "A query with no predicate, no page and no projection fetches the whole "
         + "collection. That is a legitimate thing to ask for and runs as written, but it is more "
         + "often a predicate that was left off.");
+
+    /// <summary>A chain marked for compilation that the compiler could not compile.</summary>
+    /// <remarks>
+    /// Reported because the attribute would otherwise do nothing at all, silently: the method
+    /// keeps its body and the body keeps working, so the only visible consequence of a declined
+    /// chain is the saving that did not happen. The message names the reason, because the fix is
+    /// almost always to change the chain rather than to remove the attribute.
+    /// </remarks>
+    public static readonly DiagnosticDescriptor NotCompiled = new(
+        "FGQL015",
+        "This query was not compiled",
+        "'{0}' is marked [GraphQLQuery] but was left to the runtime: {1}. The method still "
+        + "works as written; it just composes its chain on every call.",
+        CATEGORY,
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "A compiled query is one whose document and payload the compiler could write "
+        + "out in full. What it can write out is bounded, and a chain outside those bounds keeps "
+        + "the runtime translation it would have had without the attribute.");
+
+    /// <summary>A declared query whose reply the compiler could not model.</summary>
+    /// <remarks>
+    /// An error rather than a warning, and that is the difference between this surface and the
+    /// compiled one. A chain that cannot be compiled still has a body to run; a declared method
+    /// has nothing but what the compiler writes for it, so a reply that cannot be read leaves the
+    /// method with no implementation at all. Saying why here is better than letting the compiler
+    /// report the missing half.
+    /// </remarks>
+    public static readonly DiagnosticDescriptor NotModelled = new(
+        "FGQL016",
+        "This query's reply cannot be read",
+        "'{0}' cannot be implemented: {1}. Change the document or the return type, or read the "
+        + "reply yourself with SendGraphQLQueryAsync and ReadGraphQLAsync.",
+        CATEGORY,
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        description: "A declared query is implemented by a reader written from its document and "
+        + "its return type. Where the two do not describe a reply that can be read, there is "
+        + "nothing to write and the method would be left unimplemented.");
 }

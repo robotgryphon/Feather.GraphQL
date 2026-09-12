@@ -480,41 +480,8 @@ public class PrecompiledDocumentTests
         return _lastHandover;
     }
 
-    /// <summary>
-    /// Everything beside the test assembly, plus the framework. Broad on purpose: the snippet
-    /// has to bind against the same library the runtime half of the comparison runs against, and
-    /// naming assemblies one at a time is how that quietly stops being true.
-    /// </summary>
-    private static ImmutableArray<MetadataReference> References()
-    {
-        string core = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
-
-        return
-        [
-            .. Directory.EnumerateFiles(AppContext.BaseDirectory, "*.dll")
-                .Concat(Directory.EnumerateFiles(core, "*.dll"))
-                .Where(Loadable)
-                .GroupBy(Path.GetFileName)
-                .Select(group => (MetadataReference)MetadataReference.CreateFromFile(group.First()))
-        ];
-    }
-
-    /// <summary>Native and resource libraries sit in the same folder and are not assemblies.</summary>
-    private static bool Loadable(string path)
-    {
-        try
-        {
-            using var stream = File.OpenRead(path);
-            using var reader = new System.Reflection.PortableExecutable.PEReader(stream);
-
-            return reader.HasMetadata;
-        }
-        catch (BadImageFormatException)
-        {
-            return false;
-        }
-    }
-
+    /// <inheritdoc cref="SnippetReferences.All"/>
+    private static ImmutableArray<MetadataReference> References() => SnippetReferences.All();
 }
 
 /// <summary>The model the corpus queries over, shared by both halves of every comparison.</summary>

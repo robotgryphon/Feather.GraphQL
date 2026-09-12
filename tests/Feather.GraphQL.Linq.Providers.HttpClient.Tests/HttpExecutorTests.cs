@@ -285,11 +285,32 @@ public class HttpExecutorTests
         Assert.Multiple(() =>
         {
             Assert.That(exception, Is.InstanceOf<GraphQLHttpException>());
-            Assert.That(exception!.Errors[0].Message, Is.EqualTo("nope"));
-            Assert.That(exception.Message, Does.Contain("nope"));
+            Assert.That(exception!.Message, Does.Contain("nope"));
         });
 
         ((GraphQLHttpException)exception!).Response.Dispose();
+    }
+
+    /// <summary>
+    /// The errors themselves are read from the type that carries them, which is one step down
+    /// from the base and still says nothing about HTTP.
+    /// </summary>
+    /// <remarks>
+    /// The distinction the split is for: a query can fail with nothing to report — a reply that
+    /// carried no <c>data</c>, or was not a GraphQL answer at all — and the base covers those
+    /// without pretending to an empty <c>errors</c> array.
+    /// </remarks>
+    [Test]
+    public void The_servers_errors_are_read_from_the_errors_exception()
+    {
+        var handler = new StubHandler("""{"errors":[{"message":"nope"}]}""");
+
+        var exception = Assert.Catch<GraphQLErrorsException>(
+            () => Query(handler).Where(p => p.Age > 30).ToArray());
+
+        Assert.That(exception!.Errors[0].Message, Is.EqualTo("nope"));
+
+        ((GraphQLHttpException)exception).Response.Dispose();
     }
 
     /// <summary>

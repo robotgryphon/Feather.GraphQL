@@ -95,15 +95,83 @@ public class ProjectionShaperTests
     }
 
     /// <summary>
+    /// A projection into a type of one's own is shaped too, which is what most of them are.
+    /// </summary>
+    /// <remarks>
+    /// It used to be declined, and declining cost more than it looked: the fallback compiles the
+    /// lambda with <c>Expression.Compile</c> on <em>every</em> execution, so a chain projecting
+    /// into a named type paid tens of microseconds a call, forever.
+    /// </remarks>
+    [Test]
+    public void A_named_type_projection_finds_its_shaper()
+    {
+        var plan = GraphQLQueryable.For<Person>("people")
+            .Where(p => p.Age > 30)
+            .Select(p => new Dimensions { Minimum = p.Name, Maximum = p.Name })
+            .ToQueryPlan();
+
+        Assert.That(GraphQLProjectionRegistry.Find(plan.Projection!), Is.Not.Null,
+            "the key built from the expression tree did not match the one built from syntax");
+    }
+
+    /// <summary>The same, filling a member from another object built the same way.</summary>
+    /// <remarks>
+    /// The shape a projection takes when it rebuilds a nested object rather than flattening it,
+    /// which is where the renderer has to recurse instead of only ever taking a path.
+    /// </remarks>
+    [Test]
+    public void A_nested_named_type_projection_finds_its_shaper()
+    {
+        var plan = GraphQLQueryable.For<Person>("people")
+            .Select(p => new Nested { Name = p.Name, Size = new Bounds { Minimum = p.Name } })
+            .ToQueryPlan();
+
+        Assert.That(GraphQLProjectionRegistry.Find(plan.Projection!), Is.Not.Null);
+    }
+
+    /// <summary>
+    /// Two types filled with the same members are two shapes, and must not share a shaper.
+    /// </summary>
+    /// <remarks>
+    /// What the type in the key is for. An anonymous type needs no name — matching members make it
+    /// the same type by construction — but <c>new A { X = p.Name }</c> and <c>new B { X = p.Name }</c>
+    /// build different things, and a shaper for one would hand back the other.
+    /// </remarks>
+    [Test]
+    public void Two_types_with_the_same_members_do_not_share_a_shaper()
+    {
+        var first = GraphQLQueryable.For<Person>("people")
+            .Select(p => new Dimensions { Minimum = p.Name, Maximum = p.Name })
+            .ToQueryPlan();
+
+        var second = GraphQLQueryable.For<Person>("people")
+            .Select(p => new Bounds { Minimum = p.Name, Maximum = p.Name })
+            .ToQueryPlan();
+
+        Assert.Multiple(() =>
+        {
+            var shaped = GraphQLProjectionRegistry.Find(first.Projection!)!(new Person { Name = "Ada" });
+            var other = GraphQLProjectionRegistry.Find(second.Projection!)!(new Person { Name = "Ada" });
+
+            Assert.That(shaped, Is.TypeOf<Dimensions>());
+            Assert.That(other, Is.TypeOf<Bounds>());
+        });
+    }
+
+    /// <summary>
     /// A shape the generator declines must also fail to match, rather than matching the wrong
     /// shaper — the failure mode that would corrupt data instead of merely slowing it down.
     /// </summary>
+    /// <remarks>
+    /// A constructor takes its arguments by position, so the members they fill have no names to
+    /// key on. It is declined rather than guessed at.
+    /// </remarks>
     [Test]
     public void A_declined_projection_finds_no_shaper()
     {
         var plan = GraphQLQueryable.For<Person>("people")
             .Where(p => p.Age > 30)
-            .Select(p => new Dimensions { Minimum = p.Name, Maximum = p.Name })
+            .Select(p => new Named(p.Name))
             .ToQueryPlan();
 
         Assert.That(GraphQLProjectionRegistry.Find(plan.Projection!), Is.Null);
@@ -130,4 +198,23 @@ public class ProjectionShaperTests
 
         Assert.That(rows[0].Name, Is.EqualTo("Ada"));
     }
+}
+
+/// <summary>A second type with the same members, to prove a shaper is not shared across them.</summary>
+public class Bounds
+{
+    public string Minimum { get; set; } = "";
+
+    public string Maximum { get; set; } = "";
+}
+
+/// <summary>A type filled by its constructor, which names nothing a key could use.</summary>
+public sealed record Named(string Name);
+
+/// <summary>A target whose own member is another target, for the recursive case.</summary>
+public class Nested
+{
+    public string Name { get; set; } = "";
+
+    public Bounds Size { get; set; } = new();
 }

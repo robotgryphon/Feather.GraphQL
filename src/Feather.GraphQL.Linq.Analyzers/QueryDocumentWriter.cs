@@ -5,6 +5,17 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace Feather.GraphQL.Linq.Analyzers;
 
+/// <summary>What one of a document's variables carries.</summary>
+internal enum BoundValue { Filter, Order, Take, Skip, Last }
+
+/// <summary>One variable a document declared, and what the chain bound to it.</summary>
+/// <remarks>
+/// Recorded for a caller that has to <em>write</em> the payload rather than leave it to the
+/// runtime. The order is the document's numbering, which is the order the payload's properties
+/// have to be written in for the two to agree.
+/// </remarks>
+internal readonly record struct DocumentBinding(BoundValue Kind, string Name, string Type);
+
 /// <summary>
 /// Prints the document a chain would produce, at compile time.
 /// </summary>
@@ -16,7 +27,18 @@ namespace Feather.GraphQL.Linq.Analyzers;
 internal static class QueryDocumentWriter
 {
     /// <summary>The printed document, or null when this chain cannot be printed early.</summary>
-    public static string? TryWrite(ChainFacts facts, SemanticModel model, CancellationToken token)
+    /// <param name="facts">The chain to print.</param>
+    /// <param name="model">The semantic model the chain was written in.</param>
+    /// <param name="token">Cancels the analysis.</param>
+    /// <param name="bindings">
+    /// Collects what each variable carries, in the document's own numbering, for a caller writing
+    /// the payload itself. Null for the callers that only need the text.
+    /// </param>
+    public static string? TryWrite(
+        ChainFacts facts,
+        SemanticModel model,
+        CancellationToken token,
+        List<DocumentBinding>? bindings = null)
     {
         if (!ApplyResult(facts))
             return null;
@@ -32,29 +54,33 @@ internal static class QueryDocumentWriter
         var variables = new List<(string Name, string Type)>();
         var arguments = new List<(string Name, string Variable)>();
 
-        string Bind(string argument, string type)
+        string Bind(string argument, string type, BoundValue kind)
         {
             string name = "v" + variables.Count;
             variables.Add((name, type));
             arguments.Add((argument, name));
+            bindings?.Add(new DocumentBinding(kind, name, type));
             return name;
         }
 
         // The binding order is the document's variable numbering, so it must match exactly.
         if (facts.HasFilter)
-            Bind(facts.FilterArgument, facts.FilterInput ?? facts.ElementType.Name + "FilterInput");
+            Bind(facts.FilterArgument, facts.FilterInput ?? facts.ElementType.Name + "FilterInput",
+                BoundValue.Filter);
 
         if (facts.HasOrdering)
-            Bind(facts.OrderArgument, "[" + (facts.SortInput ?? facts.ElementType.Name + "SortInput") + "!]");
+            Bind(facts.OrderArgument, "[" + (facts.SortInput ?? facts.ElementType.Name + "SortInput") + "!]",
+                BoundValue.Order);
 
         if (facts.HasTake)
-            Bind(facts.Paging == Paging.Cursor ? facts.FirstArgument : facts.TakeArgument, "Int");
+            Bind(facts.Paging == Paging.Cursor ? facts.FirstArgument : facts.TakeArgument, "Int",
+                BoundValue.Take);
 
         if (facts.HasSkip)
-            Bind(facts.SkipArgument, "Int");
+            Bind(facts.SkipArgument, "Int", BoundValue.Skip);
 
         if (facts.HasLast)
-            Bind(facts.LastArgument, "Int");
+            Bind(facts.LastArgument, "Int", BoundValue.Last);
 
         var builder = new StringBuilder("query");
 

@@ -1,40 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Feather.GraphQL.Linq.Execution;
-
-/// <summary>
-/// A reply, as the converter below builds it.
-/// </summary>
-/// <remarks>
-/// Internal, and never crosses the transport seam. It is a pile of facts about one document —
-/// which field was found, what kind of value it held, whether a wrapper was in the way — and
-/// every one of them exists to answer a question the reader asks immediately afterwards. A
-/// transport is handed rows, not this.
-/// </remarks>
-internal sealed class ParsedReply<TElement>
-{
-    /// <summary>True when the reply carried a <c>data</c> object.</summary>
-    public bool HasData { get; set; }
-
-    /// <summary>True when the reply carried a non-empty <c>errors</c> array.</summary>
-    public bool HasErrors { get; set; }
-
-    /// <summary>The single field <c>data</c> carried, or null when it carried none.</summary>
-    public string? Field { get; set; }
-
-    /// <summary>What that field's value was: a list, a paging wrapper, or something else.</summary>
-    public JsonValueKind Kind { get; set; }
-
-    /// <summary>The member the rows were found under, when one was in the way.</summary>
-    public string? Wrapper { get; set; }
-
-    /// <summary>The connection's <c>totalCount</c>, when the reply carried one.</summary>
-    public long? TotalCount { get; set; }
-
-    /// <summary>The rows, in the array the serializer built them into.</summary>
-    public TElement[]? Items { get; set; }
-}
+namespace Feather.GraphQL.Serialization;
 
 /// <summary>
 /// Reads a whole reply into <see cref="ParsedReply{TElement}"/> in one pass over the bytes.
@@ -239,16 +206,4 @@ internal sealed class ParsedReplyConverter<TElement> : JsonConverter<ParsedReply
 
     public override void Write(Utf8JsonWriter writer, ParsedReply<TElement> value, JsonSerializerOptions options)
         => throw new NotSupportedException("A reply is read, never written.");
-}
-
-/// <summary>Supplies the converter for whatever element type a query turned out to have.</summary>
-internal sealed class ParsedReplyConverterFactory : JsonConverterFactory
-{
-    public override bool CanConvert(Type typeToConvert)
-        => typeToConvert.IsGenericType
-            && typeToConvert.GetGenericTypeDefinition() == typeof(ParsedReply<>);
-
-    public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options)
-        => (JsonConverter)Activator.CreateInstance(
-            typeof(ParsedReplyConverter<>).MakeGenericType(typeToConvert.GetGenericArguments()[0]))!;
 }

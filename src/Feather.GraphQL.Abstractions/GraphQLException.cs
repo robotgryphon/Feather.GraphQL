@@ -1,55 +1,45 @@
-using Feather.GraphQL.Primitives;
 using JetBrains.Annotations;
 
 namespace Feather.GraphQL;
 
 /// <summary>
-/// A GraphQL query that failed, whatever carried it.
+/// A GraphQL query that failed, whatever carried it and whatever went wrong.
 /// </summary>
 /// <remarks>
 /// <para>
 /// A GraphQL error is not a transport error — an HTTP server routinely reports one with
 /// <c>200 OK</c>, and a websocket with a perfectly healthy socket. So failure cannot be read off
-/// the transport, and making it an exception is what lets the success path return the data
-/// itself rather than a wrapper every caller has to unpack and check.
+/// the transport, and making it an exception is what lets the success path return the data itself
+/// rather than a wrapper every caller has to unpack and check.
 /// </para>
 /// <para>
-/// Abstract, and holding only what every transport can supply: the errors the server reported.
-/// A transport derives from it to add what is particular to itself — the HTTP one carries the
-/// <c>HttpResponseMessage</c> — so code that cares only that the query failed catches this, and
-/// code that wants the reply catches the derived type.
+/// Abstract, and deliberately empty. It is the type to catch when all that matters is that the
+/// query did not answer; everything about <em>why</em> belongs to a derived type, because the
+/// reasons do not generalise. The server's own <c>errors</c> array is one such reason and not the
+/// only one — a reply can fail by carrying no <c>data</c>, by not being a GraphQL answer at all,
+/// or by never arriving — so it lives on <c>GraphQLErrorsException</c>, in the package that reads
+/// replies, rather than here where it would have to be empty for every failure that had nothing
+/// to do with the server's opinion of the query.
+/// </para>
+/// <para>
+/// Keeping it empty is also what keeps it free: a package that only needs to say a query failed
+/// takes no dependency on the shape of a reply, and the error model lives with the reader that
+/// builds it.
 /// </para>
 /// </remarks>
 [PublicAPI]
 public abstract class GraphQLException : Exception
 {
-    /// <summary>The <c>errors</c> array, parsed. Empty when the reply carried none.</summary>
-    public GraphQLError[] Errors { get; }
-
-    protected GraphQLException(GraphQLError[]? errors, string message)
+    /// <param name="message">What went wrong, in the terms the thrower knows.</param>
+    protected GraphQLException(string message)
         : base(message)
-        => Errors = errors ?? [];
-
-    protected GraphQLException(GraphQLError[]? errors, string message, Exception? innerException)
-        : base(message, innerException)
-        => Errors = errors ?? [];
-
-    /// <summary>
-    /// Leads with the server's own words, because that is what a reader needs first.
-    /// </summary>
-    /// <returns>
-    /// A summary of <paramref name="errors"/>, or null when there were none — in which case the
-    /// transport knows better than this type what went wrong, and supplies its own message.
-    /// </returns>
-    protected static string? Describe(GraphQLError[]? errors)
     {
-        if (errors is not { Length: > 0 })
-            return null;
+    }
 
-        string first = errors[0].Message;
-
-        return errors.Length == 1
-            ? $"The GraphQL server reported an error: {first}"
-            : $"The GraphQL server reported {errors.Length} errors, the first being: {first}";
+    /// <param name="message">What went wrong, in the terms the thrower knows.</param>
+    /// <param name="innerException">What was being done when it did.</param>
+    protected GraphQLException(string message, Exception? innerException)
+        : base(message, innerException)
+    {
     }
 }

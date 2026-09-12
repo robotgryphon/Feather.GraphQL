@@ -8,11 +8,12 @@ namespace Feather.GraphQL.Http;
 /// </summary>
 /// <remarks>
 /// Adds the one thing this transport can supply and no other can: the reply itself. Catch
-/// <see cref="GraphQLException"/> to handle a failed query whatever carried it; catch this to
-/// read the status, the headers or the body.
+/// <see cref="GraphQLException"/> to handle a failed query whatever carried it,
+/// <see cref="GraphQLErrorsException"/> to read what the server reported, and this to read the
+/// status, the headers or the body.
 /// </remarks>
 [PublicAPI]
-public sealed class GraphQLHttpException : GraphQLException
+public sealed class GraphQLHttpException : GraphQLErrorsException
 {
     /// <summary>
     /// The reply — status, headers and body. Live and undisposed when thrown, because a failure

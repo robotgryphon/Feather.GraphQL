@@ -2,7 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Text.Json;
 using Feather.GraphQL.Http.Request;
-using Feather.GraphQL.Http.Response;
+using Feather.GraphQL.Serialization;
 
 namespace Feather.GraphQL.Http;
 
@@ -95,6 +95,31 @@ public static class HttpExtensions
         }
 
         /// <summary>
+        /// Posts a query with the values its variables take.
+        /// </summary>
+        /// <remarks>
+        /// What a <c>[GraphQLQuery]</c> method calls. The payload writes itself, so a declared
+        /// query reaches the wire without a dictionary, a node tree, or a boxed value anywhere
+        /// between the caller's arguments and the request body.
+        /// </remarks>
+        /// <param name="query">The operation to send.</param>
+        /// <param name="variables">The values its variables take.</param>
+        /// <param name="cancellationToken">Cancels the request.</param>
+        public async ValueTask<HttpResponseMessage> SendGraphQLQueryAsync(
+                [StringSyntax("GraphQL")] string query,
+                IGraphQLVariables variables,
+                CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(query);
+            ArgumentNullException.ThrowIfNull(variables);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return await client
+                    .PostGraphQueryAsync(new GraphQLRequest(query, variables), cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+        }
+
+        /// <summary>
         /// Posts a request the LINQ integration translated. Internal: a request carries a
         /// variables payload, and building one by hand is not part of the public surface.
         /// </summary>
@@ -136,6 +161,42 @@ public static class HttpExtensions
 
     extension(HttpResponseMessage response)
     {
+        /// <summary>
+        /// Reads the reply with a parser written for this query's own reply.
+        /// </summary>
+        /// <remarks>
+        /// The preferred path for a compiled query, and the reason this package no longer owns
+        /// reading: the parser is generated from the selection set, so the rows arrive in the shape
+        /// the caller asked for, in one pass, with no contract resolved and nothing materialized on
+        /// the way that is not the answer. What this adds is the part that is the transport's — the
+        /// pooled buffer, and what a failed reply means.
+        /// </remarks>
+        /// <typeparam name="TResult">What the parser produces.</typeparam>
+        /// <param name="parse">The generated parser.</param>
+        /// <param name="cancellationToken">Cancels the read.</param>
+        /// <exception cref="GraphQLHttpException">
+        /// The reply carried an <c>errors</c> array, or carried no <c>data</c> at all.
+        /// </exception>
+        public async ValueTask<TResult> ReadGraphQLReplyAsync<TResult>(
+                GraphQLReplyParser<TResult> parse,
+                CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(response);
+            ArgumentNullException.ThrowIfNull(parse);
+
+            using var body = await ResponseBuffer
+                    .ReadAsync(response.Content, cancellationToken)
+                    .ConfigureAwait(false);
+
+            var result = parse(body.Bytes.Span, out bool hasData, out bool hasErrors);
+
+            // The errors themselves are not collected on the way past — a reply that carries them
+            // is the failing one, and rescanning it costs nothing a successful read pays.
+            Ensure(response, hasErrors, hasData, errors: null, body.Bytes);
+
+            return result;
+        }
+
         /// <summary>
         /// Reads the reply's <c>data</c> into <typeparamref name="TData"/>.
         /// </summary>
@@ -183,5 +244,30 @@ public static class HttpExtensions
 
             return reply.Data;
         }
+    }
+
+    /// <summary>
+    /// Throws what a failed reply means, for the readers that share one idea of failure.
+    /// </summary>
+    /// <remarks>
+    /// Errors first, before the status code: a GraphQL server answers a failed query with 200 and
+    /// an <c>errors</c> array far more often than with a failing status, and the array says more
+    /// than the status would. A reply with neither errors nor <c>data</c> is still a failure —
+    /// there is nothing to return and no explanation of why.
+    /// </remarks>
+    private static void Ensure(
+        HttpResponseMessage response,
+        bool hasErrors,
+        bool hasData,
+        Primitives.GraphQLError[]? errors,
+        ReadOnlyMemory<byte> body)
+    {
+        if (hasErrors)
+            throw new GraphQLHttpException(errors ?? GraphQLResponseReader.ErrorsIn(body) ?? [], response);
+
+        response.EnsureSuccessStatusCode();
+
+        if (!hasData)
+            throw new GraphQLHttpException(errors: null, response);
     }
 }
