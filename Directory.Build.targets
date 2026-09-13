@@ -1,0 +1,12 @@
+<Project>
+
+  <!--
+    The readme NuGet shows on a package's page. Declared here rather than in Directory.Build.props
+    because a project sets IsPackable after the props are read, and a test or benchmark project
+    that is not packable must not be asked for a readme it will never use.
+  -->
+  <ItemGroup Condition="'$(IsPackable)' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
+</Project>

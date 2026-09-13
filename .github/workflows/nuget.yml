@@ -3,15 +3,13 @@ on:
   push:
     branches:
       - master
-      - 'release/**'
-      - 'releases/**'
-    
+
   workflow_dispatch:
 
-
 permissions:
+  contents: read
   id-token: write  # enable GitHub OIDC token issuance for this job
-      
+
 env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -22,64 +20,101 @@ jobs:
     name: Build and Test
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 1
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # The version comes from the commit history, so the whole of it has to be here. A shallow
+          # clone gives a version that silently restarts from zero.
+          fetch-depth: 0
 
-    - name: Unshallow
-      run: git fetch --unshallow
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
 
-    - name: Setup .NET SDK
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: "10.0.x"
-        source-url: https://nuget.pkg.github.com/robotgryphon/index.json
-      env:
-        NUGET_AUTH_TOKEN: ${{secrets.GITHUB_TOKEN}}
+      - name: Read the version out of the commit history
+        id: version
+        uses: paulhatch/semantic-version@v5.4.0
+        with:
+          tag_prefix: "v"
+          # The bump is asked for in the commit that makes the change, rather than inferred from
+          # the shape of the diff — nothing else can tell a breaking change from a large one.
+          major_pattern: "(MAJOR)"
+          minor_pattern: "(MINOR)"
+          version_format: "${major}.${minor}.${patch}"
+          search_commit_body: true
 
-    - name: Restore dotnet tools
-      run: dotnet tool restore
+      - name: Fail if the version number has not been resolved
+        if: ${{ !steps.version.outputs.version }}
+        run: |
+          echo "Error! Version number not resolved!"
+          exit 1
 
-    - name: Generate version info from git history
-      id: version
-      run: |
-        dotnet gitversion /output json /showvariable SemVer | xargs printf version=%s >> version.txt
-        echo "" >> version.txt
-        head -n 1 version.txt >> $GITHUB_OUTPUT
+      - name: Install dependencies
+        run: dotnet restore
 
-    - name: Fail if the version number has not been resolved
-      if: ${{ !steps.version.outputs.version }}
-      run: |
-        echo Error! Version number not resolved!
-        exit 1
+      - name: Build solution
+        run: dotnet build --no-restore -c Release -p:Version=${{ steps.version.outputs.version }}
 
-    - name: Print current version
-      run: echo "Current version is \"${{steps.version.outputs.version}}\""
+      - name: Run tests
+        # NUnitLite suites are executables rather than `dotnet test` targets, so each one is run.
+        run: |
+          failed=0
 
-    - name: Install dependencies
-      run: dotnet restore
+          for project in tests/*/; do
+            name=$(basename "$project")
+            runner="$project/bin/Release/net10.0/$name"
 
-    - name: Build solution
-      run: dotnet build --no-restore -c Release
+            if [ -x "$runner" ]; then
+              echo "::group::$name"
+              "$runner" --noresult || failed=1
+              echo "::endgroup::"
+            fi
+          done
 
-    - name: Run Tests
-      run: dotnet test -c Release --no-restore --no-build
+          exit $failed
 
-    - name: Create NuGet packages
-      run: dotnet pack -c Release --no-restore --no-build -o nupkg
+      - name: Verify the AOT claim
+        # The one test that cannot be run as a test: publish it, and either it compiles to native
+        # code without a trim warning or the claim in the readme is not true.
+        run: |
+          dotnet publish samples/Feather.GraphQL.AotSmoke -c Release -r linux-x64 \
+            -p:PublishAot=true -p:Version=${{ steps.version.outputs.version }} \
+            -warnaserror
 
-    - name: Upload nuget packages as artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: nupkg
-        path: nupkg
+          ./samples/Feather.GraphQL.AotSmoke/bin/Release/net10.0/linux-x64/publish/Feather.GraphQL.AotSmoke
 
-    - name: NuGet login (OIDC → temp API key)
-      uses: NuGet/login@v1
-      id: login
-      with:
-        user: ${{secrets.NUGET_USER}}
-        
-    - name: Publish Nuget packages to Nuget registry
-      run: dotnet nuget push "nupkg/Feather.GraphQL.*" --api-key ${{steps.login.outputs.NUGET_API_KEY}} --source https://api.nuget.org/v3/index.json
+      - name: Create NuGet packages
+        run: dotnet pack -c Release --no-restore --no-build -o nupkg -p:Version=${{ steps.version.outputs.version }}
+
+      - name: Upload nuget packages as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nupkg
+          path: nupkg
+
+      - name: NuGet login (OIDC → temp API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{secrets.NUGET_USER}}
+
+      - id: publish
+        name: Publish NuGet packages to the NuGet registry
+        run: dotnet nuget push "nupkg/Feather.GraphQL.*.nupkg" --api-key ${{steps.login.outputs.NUGET_API_KEY}} --source https://api.nuget.org/v3/index.json
+
+      - id: create-tag
+        name: Create tag
+        needs: [ version, publish ]
+        runs-on: ubuntu-latest
+        steps:
+          - name: Create tag
+            uses: actions/github-script@v8
+            with:
+              script: |
+                github.rest.git.createRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: 'refs/tags/releases/v${{ needs.version.outputs.version }}',
+                  sha: context.sha
+                })

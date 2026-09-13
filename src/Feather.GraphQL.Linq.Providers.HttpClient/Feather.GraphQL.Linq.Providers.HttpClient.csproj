@@ -11,10 +11,6 @@
     <RootNamespace>Feather.GraphQL.Linq.Providers</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Update="GitVersion.MsBuild">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
-    </PackageReference>
     <PackageReference Include="JetBrains.Annotations" />
     <!-- For the IOptions<T> overloads only; the delegate and instance forms need nothing. -->
     <PackageReference Include="Microsoft.Extensions.Options" />
@@ -23,7 +19,11 @@
     <InternalsVisibleTo Include="Feather.GraphQL.Linq.Providers.HttpClient.Tests" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Feather.GraphQL.Linq\Feather.GraphQL.Linq.csproj" />
+    <!-- PrivateAssets="none" so the analyzer flows. NuGet marks analyzers private by default,
+         which means a package that depends on one carrying an analyzer does not pass it on — a
+         consumer installing this package would get the LINQ surface with none of the diagnostics
+         and no generator, and their chains would compile and then throw. -->
+    <ProjectReference Include="..\Feather.GraphQL.Linq\Feather.GraphQL.Linq.csproj" PrivateAssets="none" />
     <ProjectReference Include="..\Feather.GraphQL.Http\Feather.GraphQL.Http.csproj" />
   </ItemGroup>
 </Project>

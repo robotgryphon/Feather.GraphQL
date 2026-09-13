@@ -11,6 +11,12 @@
     <NoWarn>$(NoWarn);1591</NoWarn> <!--TODO: write comments to public APIs-->
     <Nullable>enable</Nullable>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <Copyright>Copyright (c) Feather.GraphQL contributors</Copyright>
+    <RepositoryUrl>https://github.com/robotgryphon/Feather.GraphQL</RepositoryUrl>
+    <!-- A package built without a version from CI is not one to publish by accident. -->
+    <Version Condition="'$(Version)' == ''">0.0.1-local</Version>
+    <IncludeSymbols>false</IncludeSymbols>
     <PackageProjectUrl>https://github.com/robotgryphon/Feather.GraphQL</PackageProjectUrl>
     <PackageTags>GraphQL</PackageTags>
     <RepositoryType>git</RepositoryType>

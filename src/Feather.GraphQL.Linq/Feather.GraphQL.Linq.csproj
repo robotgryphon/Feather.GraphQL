@@ -9,14 +9,6 @@
     <RootNamespace>Feather.GraphQL.Linq</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <!-- Linked, not referenced: an analyzer carries its dependencies into the compiler, and one
-         copy of a rule cannot drift from itself. -->
-  </ItemGroup>
-  <ItemGroup>
-    <PackageReference Update="GitVersion.MsBuild">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
-    </PackageReference>
     <PackageReference Include="JetBrains.Annotations" />
   </ItemGroup>
   <ItemGroup>
@@ -37,6 +29,12 @@
          which owns the exception carrying the response. -->
     <ProjectReference Include="..\Feather.GraphQL.Abstractions\Feather.GraphQL.Abstractions.csproj" />
     <ProjectReference Include="..\Feather.GraphQL.Serialization\Feather.GraphQL.Serialization.csproj" />
+    <!-- Because the analyzer this package carries emits calls into it. A compiled query posts with
+         PostGraphQLBodyAsync and reads with ReadGraphQLReplyAsync, so a consumer who installs this
+         package and writes one would otherwise get generated code that does not compile. Nothing
+         in this assembly calls Http; the dependency is the generated half's, and it has to be
+         declared by whoever ships the generator. -->
+    <ProjectReference Include="..\Feather.GraphQL.Http\Feather.GraphQL.Http.csproj" />
   </ItemGroup>
   <ItemGroup>
     <!-- The analyzer ships inside this package, so a consumer gets the compile-time half of the

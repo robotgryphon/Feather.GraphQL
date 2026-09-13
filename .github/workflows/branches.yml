@@ -7,6 +7,9 @@ on:
       - 'releases/**'
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -20,33 +23,76 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
       with:
+        # The version comes from the commit history, so the whole of it has to be here.
         fetch-depth: 0
+
     - name: Setup .NET SDK
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: |
-          10.0.x
-    - name: Restore dotnet tools
-      run: dotnet tool restore
-    - name: Fetch complete repository including tags
-      run: git fetch --tags --force --prune && git describe
-    - name: Generate version info from git history
-      run: dotnet gitversion /output json | jq -r 'to_entries|map("GitVersion_\(.key)=\(.value|tostring)")|.[]' >> $GITHUB_ENV
-    - name: Fail if the version number has not been resolved
-      if: ${{ !env.GitVersion_SemVer }}
+        dotnet-version: "10.0.x"
+
+    - name: Read the version out of the commit history
+      id: semver
+      uses: paulhatch/semantic-version@v5.4.0
+      with:
+        tag_prefix: "v"
+        major_pattern: "(MAJOR)"
+        minor_pattern: "(MINOR)"
+        version_format: "${major}.${minor}.${patch}"
+        search_commit_body: true
+
+    - name: Decide the package version
+      id: version
       run: |
-        echo Error! Version number not resolved!
+        # A branch build is never published, so the branch is in the version to make that obvious
+        # if one ever escapes into a feed.
+        slug=$(echo "${GITHUB_REF_NAME}" | tr -c '[:alnum:]' '-' | sed 's/-\+/-/g;s/^-//;s/-$//' | cut -c1-20)
+        version="${{ steps.semver.outputs.version }}-${slug}.${{ steps.semver.outputs.increment }}"
+
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "Building version $version"
+
+    - name: Fail if the version number has not been resolved
+      if: ${{ !steps.version.outputs.version }}
+      run: |
+        echo "Error! Version number not resolved!"
         exit 1
-    - name: Print current version
-      run: echo "Current version is \"$GitVersion_SemVer\""
+
     - name: Install dependencies
       run: dotnet restore
+
     - name: Build solution
-      run:  dotnet build --no-restore -c Release
-    - name: Run Tests
-      run: dotnet test -c Release --no-restore --no-build
+      run: dotnet build --no-restore -c Release -p:Version=${{ steps.version.outputs.version }}
+
+    - name: Run tests
+      # NUnitLite suites are executables rather than `dotnet test` targets, so each one is run.
+      run: |
+        failed=0
+
+        for project in tests/*/; do
+          name=$(basename "$project")
+          runner="$project/bin/Release/net10.0/$name"
+
+          if [ -x "$runner" ]; then
+            echo "::group::$name"
+            "$runner" --noresult || failed=1
+            echo "::endgroup::"
+          fi
+        done
+
+        exit $failed
+
+    - name: Verify the AOT claim
+      run: |
+        dotnet publish samples/Feather.GraphQL.AotSmoke -c Release -r linux-x64 \
+          -p:PublishAot=true -p:Version=${{ steps.version.outputs.version }} \
+          -warnaserror
+
+        ./samples/Feather.GraphQL.AotSmoke/bin/Release/net10.0/linux-x64/publish/Feather.GraphQL.AotSmoke
+
     - name: Create NuGet packages
-      run: dotnet pack -c Release --no-restore --no-build -o nupkg
+      run: dotnet pack -c Release --no-restore --no-build -o nupkg -p:Version=${{ steps.version.outputs.version }}
+
     - name: Upload nuget packages
       uses: actions/upload-artifact@v4
       with:
