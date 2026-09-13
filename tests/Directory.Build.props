@@ -1,0 +1,51 @@
+<Project>
+
+  <!--
+    The repository's own settings first. A Directory.Build.props nearest the project wins outright,
+    so the root one has to be imported by hand or everything in it is lost for the tests.
+  -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <PropertyGroup>
+    <!--
+      NUnit's own runner, on Microsoft.Testing.Platform. A test project becomes an executable that
+      hosts the platform, and `dotnet test` drives it directly — so what CI runs and what a
+      developer runs are the same program, rather than a VSTest host in one place and a bare
+      executable in the other.
+    -->
+    <!--
+      Cleared: the root props set TargetFrameworks (plural), which makes every project a
+      multi-targeting outer build. The runner's registration is contributed by the adapter's props,
+      which only import for a concrete target framework — so an outer build generates an entry
+      point that registers no test framework, and the run fails with nothing to run.
+    -->
+    <TargetFrameworks></TargetFrameworks>
+    <TargetFramework>net10.0</TargetFramework>
+
+    <OutputType>Exe</OutputType>
+    <EnableNUnitRunner>true</EnableNUnitRunner>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      The runner itself lives in the adapter package, not in NUnit: it is what defines
+      EnableNUnitRunner, generates the entry point, and brings Microsoft.Testing.Platform with it.
+      NUnit alone builds a library with no way to run.
+    -->
+    <PackageReference Include="NUnit" />
+    <PackageReference Include="NUnit3TestAdapter" />
+    <PackageReference Include="NUnit.Analyzers">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="NUnit.Framework" />
+  </ItemGroup>
+
+</Project>

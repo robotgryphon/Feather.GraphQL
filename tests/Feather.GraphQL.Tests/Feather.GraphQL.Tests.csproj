@@ -4,27 +4,15 @@
     <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <IsPackable>false</IsPackable>
     <RootNamespace>Feather.GraphQL.Tests</RootNamespace>
-    <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Bogus" />
     <PackageReference Include="coverlet.collector" />
     <PackageReference Include="GraphQL.Server.Transports.AspNetCore" />
     <PackageReference Include="Microsoft.Net.Http.Headers" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" />
-    <PackageReference Include="NUnit.Analyzers">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
-    <PackageReference Include="NUnit3TestAdapter" />
     <PackageReference Include="GraphQL" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
-    <PackageReference Include="NUnit" />
-  </ItemGroup>
-  <ItemGroup>
-    <Using Include="NUnit.Framework" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Feather.GraphQL.Http\Feather.GraphQL.Http.csproj" />

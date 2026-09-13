@@ -4,23 +4,8 @@
     <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <IsPackable>false</IsPackable>
     <RootNamespace>Feather.GraphQL.Http.Tests</RootNamespace>
-    <OutputType>Exe</OutputType>
-    <!-- NUnitLite rather than VSTest/MTP, as the other suites in this repo use. -->
-    <GenerateProgramFile>false</GenerateProgramFile>
   </PropertyGroup>
-  <ItemGroup>
-    <PackageReference Include="NUnit" />
-    <PackageReference Include="NUnitLite" />
-    <PackageReference Include="NUnit.Analyzers">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
-  </ItemGroup>
-  <ItemGroup>
-    <Using Include="NUnit.Framework" />
-  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Feather.GraphQL.Http\Feather.GraphQL.Http.csproj" />
   </ItemGroup>

@@ -4,23 +4,8 @@
     <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <IsPackable>false</IsPackable>
     <RootNamespace>Feather.GraphQL.Linq.Providers.Tests</RootNamespace>
-    <OutputType>Exe</OutputType>
-    <!-- NUnitLite rather than VSTest/MTP, for the reason documented in Feather.GraphQL.Linq.Tests. -->
-    <GenerateProgramFile>false</GenerateProgramFile>
   </PropertyGroup>
-  <ItemGroup>
-    <PackageReference Include="NUnit" />
-    <PackageReference Include="NUnitLite" />
-    <PackageReference Include="NUnit.Analyzers">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
-  </ItemGroup>
-  <ItemGroup>
-    <Using Include="NUnit.Framework" />
-  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Feather.GraphQL.Linq.Providers.HttpClient\Feather.GraphQL.Linq.Providers.HttpClient.csproj" />
     <!-- Referenced as an analyzer so the interceptors it emits land in this assembly, which is
