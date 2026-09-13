@@ -39,7 +39,6 @@
     <Project Path="src/Feather.GraphQL.Linq.Analyzers/Feather.GraphQL.Linq.Analyzers.csproj" />
   </Folder>
   <Folder Name="/tests/">
-    <Project Path="tests/Feather.GraphQL.Tests/Feather.GraphQL.Tests.csproj" />
     <Project Path="tests/Feather.GraphQL.Http.Tests/Feather.GraphQL.Http.Tests.csproj" />
     <Project Path="tests/Feather.GraphQL.Linq.Providers.HttpClient.Tests/Feather.GraphQL.Linq.Providers.HttpClient.Tests.csproj" />
     <Project Path="tests/Feather.GraphQL.Linq.Analyzers.Tests/Feather.GraphQL.Linq.Analyzers.Tests.csproj" />
