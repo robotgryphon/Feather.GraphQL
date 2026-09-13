@@ -34,7 +34,7 @@ jobs:
         with:
           # Matches the tags the release job writes. If these two disagree the action cannot see
           # its own previous releases, and every build resolves to the same number.
-          tag_prefix: "releases/v"
+          tag_prefix: "v"
           # The bump is asked for in the commit that makes the change, rather than inferred from
           # the shape of the diff — nothing else can tell a breaking change from a large one.
           major_pattern: "(MAJOR)"
