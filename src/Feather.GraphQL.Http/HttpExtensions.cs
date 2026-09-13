@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Text.Json;
@@ -52,6 +53,57 @@ public static class HttpExtensions
 
     extension(HttpClient client)
     {
+        /// <summary>
+        /// Posts a GraphQL query string with the values its variables take.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The shape other clients take, and the one a caller with a document already has in
+        /// hand expects. What it costs is what an ordinary dictionary costs — a box per value and
+        /// a type test to write it — and the body itself is built the way the library builds
+        /// every body, in pooled memory with nothing allocated per request that is not the
+        /// request.
+        /// </para>
+        /// <para>
+        /// The values are written by type rather than serialized, so this stays on the path a
+        /// NativeAOT build can see. A type the table below does not name is refused, plainly, at
+        /// the moment of writing — the alternative is a reflection fallback that would work in
+        /// development and fail once published.
+        /// </para>
+        /// </remarks>
+        /// <param name="query">The operation to send.</param>
+        /// <param name="variables">
+        /// The values its variables take. Strings, booleans, the numeric types, <c>Guid</c>, the
+        /// date and time types, enums, nested dictionaries, and sequences of any of those.
+        /// </param>
+        /// <param name="cancellationToken">Cancels the request.</param>
+        /// <exception cref="NotSupportedException">A value is of a type this cannot write.</exception>
+        public async ValueTask<HttpResponseMessage> SendGraphQLQueryAsync(
+                [StringSyntax("GraphQL")] string query,
+                IReadOnlyDictionary<string, object?> variables,
+                CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(query);
+            ArgumentNullException.ThrowIfNull(variables);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            using var body = PooledBody.Rent(query.Length + 64);
+
+            body.WriteRaw("{\"query\":"u8);
+            body.Write(query);
+
+            if (variables.Count > 0)
+            {
+                body.WriteRaw(",\"variables\":"u8);
+                WriteMap(body, variables);
+            }
+
+            body.WriteRaw("}"u8);
+
+            return await client.PostGraphQLBodyAsync(body.Written, null, cancellationToken)
+                    .ConfigureAwait(false);
+        }
+
         /// <summary>
         /// Posts a precompiled GraphQL query string. Any values the query needs must already be
         /// present in its text — this path carries no variables payload.
@@ -126,6 +178,101 @@ public static class HttpExtensions
                     .SendAsync(message, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                     .ConfigureAwait(false);
         }
+    }
+
+    /// <summary>Writes a map of variables as a JSON object.</summary>
+    /// <remarks>
+    /// The separators are written here. A <c>Utf8JsonWriter</c> would have tracked what it had
+    /// written and put the commas in; bytes do not, so the count does.
+    /// </remarks>
+    private static void WriteMap(PooledBody body, IReadOnlyDictionary<string, object?> map)
+    {
+        body.WriteRaw("{"u8);
+
+        int written = 0;
+
+        foreach (var pair in map)
+        {
+            if (written++ > 0)
+                body.WriteRaw(","u8);
+
+            body.Write(pair.Key);
+            body.WriteRaw(":"u8);
+
+            WriteValue(body, pair.Value);
+        }
+
+        body.WriteRaw("}"u8);
+    }
+
+    /// <summary>
+    /// Writes one variable's value as the JSON a server expects for it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A type test per case, and no serializer. That is what keeps this path trimmable: asking
+    /// <c>System.Text.Json</c> to write an <see cref="object"/> means asking it to find a
+    /// contract for whatever the runtime type turns out to be, which is the one thing an
+    /// ahead-of-time build cannot do.
+    /// </para>
+    /// <para>
+    /// <see cref="string"/> is tested before <see cref="IEnumerable"/> because it is one, and a
+    /// string written as an array of characters is a bug that would reach a server rather than a
+    /// compiler.
+    /// </para>
+    /// </remarks>
+    private static void WriteValue(PooledBody body, object? value)
+    {
+        switch (value)
+        {
+            case null: body.WriteNull(); return;
+            case string text: body.Write(text); return;
+            case bool flag: body.Write(flag); return;
+            case int i: body.Write(i); return;
+            case long l: body.Write(l); return;
+            case short s: body.Write((int)s); return;
+            case sbyte sb: body.Write((int)sb); return;
+            case byte b: body.Write((int)b); return;
+            case ushort us: body.Write((int)us); return;
+            case uint ui: body.Write((long)ui); return;
+            case ulong ul: body.Write((decimal)ul); return;
+            case double d: body.Write(d); return;
+            case float f: body.Write((double)f); return;
+            case decimal m: body.Write(m); return;
+            case Guid g: body.Write(g); return;
+            case DateTime dt: body.Write(dt); return;
+            case DateTimeOffset dto: body.Write(dto); return;
+            case DateOnly date: body.Write(date); return;
+            case TimeOnly time: body.Write(time); return;
+
+            // A GraphQL enum travels as its name, and in variables that name is a JSON string.
+            case Enum e: body.Write(e.ToString()); return;
+
+            case IReadOnlyDictionary<string, object?> nested: WriteMap(body, nested); return;
+        }
+
+        if (value is IEnumerable items)
+        {
+            body.WriteRaw("["u8);
+
+            int written = 0;
+
+            foreach (object? item in items)
+            {
+                if (written++ > 0)
+                    body.WriteRaw(","u8);
+
+                WriteValue(body, item);
+            }
+
+            body.WriteRaw("]"u8);
+
+            return;
+        }
+
+        throw new NotSupportedException(
+            $"A variable of type '{value.GetType().Name}' cannot be written. Pass a scalar, an "
+            + "enum, a dictionary, or a sequence of those — or build the request body yourself.");
     }
 
     extension(HttpResponseMessage response)

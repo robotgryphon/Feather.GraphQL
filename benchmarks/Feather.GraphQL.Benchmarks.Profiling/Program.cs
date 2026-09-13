@@ -47,6 +47,9 @@ internal static class Program
         if (options.Only is "static" or "both")
             phases.Add(("static", Pipelines.StaticAsync));
 
+        if (options.Only is "static-filtered" or "both")
+            phases.Add(("static-filtered", Pipelines.StaticFilteredAsync));
+
         if (options.Only is "linq" or "both")
             phases.Add(("linq", Pipelines.CompiledAsync));
 
@@ -161,7 +164,8 @@ internal static class Program
                     default:
                         Console.Error.WriteLine($"unrecognised argument: {args[i]}");
                         Console.Error.WriteLine(
-                            "usage: [--rows N] [--seconds N] [--only static|linq|linq-filtered|both] [--pause]");
+                            "usage: [--rows N] [--seconds N] "
+                            + "[--only static|static-filtered|linq|linq-filtered|both] [--pause]");
 
                         return null;
                 }

@@ -1,5 +1,8 @@
+using System.Buffers;
+using System.Text.Json;
 using Feather.GraphQL.Benchmarks;
 using Feather.GraphQL.Http;
+using Feather.GraphQL.Serialization;
 using Feather.GraphQL.Linq.Filtering;
 using Feather.GraphQL.Linq.Providers;
 using Feather.GraphQL.Linq.Query;
@@ -25,21 +28,55 @@ internal static class Pipelines
 {
     private const string ContinentCode = "EU";
 
+    /// <summary>The variables the filtered document binds.</summary>
+    /// <remarks>
+    /// Built once. A caller sending the same query repeatedly holds theirs the same way,
+    /// and rebuilding it per iteration would measure the dictionary rather than the request.
+    /// </remarks>
+    private static readonly Dictionary<string, object?> _continent =
+        new() { ["continent"] = ContinentCode };
+
     /// <summary>The document, written out, as a caller with no LINQ would send it.</summary>
     private const string Query =
         "query { countries { name continent { name } } }";
+
+    /// <inheritdoc cref="Query"/>
+    private const string FilteredQuery =
+        "query($continent: String!) { countries(filter: { continent: { eq: $continent } }) "
+        + "{ name continent { name } } }";
 
     /// <summary>
     /// Post a document and read the reply into a declared type.
     /// </summary>
     /// <remarks>
-    /// Nothing is generated for this: the reply goes through a serializer contract resolved at run
-    /// time, into a wrapper type that exists to hold the root field. What a profile should show is
-    /// where that costs more than reading with a reader written for the shape.
+    /// Nothing is generated for this: the reply goes through <c>System.Text.Json</c> and the
+    /// caller's own declared contract. What a profile should show is where that costs more than a
+    /// reader written for one query's shape.
     /// </remarks>
     public static async Task<int> StaticAsync(HttpClient client)
     {
         using var response = await client.SendGraphQLQueryAsync(Query).ConfigureAwait(false);
+
+        return (await response.ReadGraphQLAsync<CountriesData>().ConfigureAwait(false)).Countries.Length;
+    }
+
+    /// <summary>The same document with a variable, whose body the caller has to build.</summary>
+    /// <remarks>
+    /// <para>
+    /// The row under investigation. It allocates about three times what the unfiltered one does
+    /// for a reply of the same size, and the difference is all on the sending side — this builds
+    /// an envelope per request through a serializer, where the unfiltered path sends a constant.
+    /// </para>
+    /// <para>
+    /// Kept byte-for-byte what <c>ClientComparison.StaticFiltered</c> does, so a profile of this
+    /// is a profile of that.
+    /// </para>
+    /// </remarks>
+    public static async Task<int> StaticFilteredAsync(HttpClient client)
+    {
+        using var response = await client
+            .SendGraphQLQueryAsync(FilteredQuery, _continent)
+            .ConfigureAwait(false);
 
         return (await response.ReadGraphQLAsync<CountriesData>().ConfigureAwait(false)).Countries.Length;
     }

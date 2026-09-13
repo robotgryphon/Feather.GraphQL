@@ -99,6 +99,19 @@ using var response = await client.SendGraphQLQueryAsync("query { countries { nam
 var data = await response.ReadGraphQLAsync<CountriesData>();
 ```
 
+With variables, as any other client takes them:
+
+```csharp
+using var response = await client.SendGraphQLQueryAsync(
+    "query($code: String!) { countries(filter: { continent: { eq: $code } }) { name } }",
+    new Dictionary<string, object?> { ["code"] = "EU" });
+```
+
+Values are written by type rather than serialized: strings, the numeric types, `bool`, `Guid`, the
+date and time types, enums (as their names), nested dictionaries, and sequences of any of those. A
+type outside that list throws rather than falling back to reflection — which would work in
+development and fail once published.
+
 This path reads through `System.Text.Json`, so the type needs a source-generated
 `JsonSerializerContext` in your own assembly. It is found and registered for you — but there is no
 reflection fallback, so a type no context covers fails rather than quietly working.
@@ -232,8 +245,8 @@ delegate or a reflective call reaches the real body — which throws. `FGQL018` 
 build time.
 
 **There is no fallback.** A chain the compiler cannot translate used to run the slow way. It now
-fails to build — `FGQL015`, naming the reason. The fix is to change the chain or write the
-document yourself.
+fails to build — `FGQL015`, naming the reason. The fix is to change the chain, or to send the
+document yourself with `SendGraphQLQueryAsync` and a dictionary of variables.
 
 **`Select` decides the selection set.** No `Select` means every scalar field of the element, which
 is usually more than you want — `FGQL012` says so when a query has no `Where`, `Take` or `Select`
@@ -292,10 +305,58 @@ dotnet publish samples/Feather.GraphQL.AotSmoke -c Release -r osx-arm64 /p:Publi
 
 ## Benchmarks
 
-See [`EndOfDayReport-2026-09-12.md`](EndOfDayReport-2026-09-12.md) and the archived tables under
-`docs/benchmarks/`. Read the provenance note at the top of the report before quoting a number:
-timing deltas under about 8% on generated rows are inside the measurement noise, and the report
-says which figures are measured and which are not.
+The same query — `{ countries { name continent { name } } }` — sent four ways over a canned
+transport, so what is measured is the client and not a server or a network. Apple M5 Pro,
+.NET 10.0.8 arm64, BenchmarkDotNet 0.15.8, 2026-09-13.
+
+**1 row**
+
+| Method                              | Mean         | Ratio    | Allocated   | Alloc ratio |
+| ----------------------------------- | ------------ | -------- | ----------- | ----------- |
+| Static — a document you wrote       | 506.0 ns     | 1.00     | 2.05 KB     | 1.00        |
+| Static, with variables              | 534.9 ns     | 1.06     | 2.12 KB     | 1.03        |
+| **`[GraphQLQuery("…")]` declared**  | **343.7 ns** | **0.68** | **1.53 KB** | **0.75**    |
+| `[GraphQLQuery("…")]`, filtered     | 352.8 ns     | 0.70     | 1.53 KB     | 0.75        |
+| **`[GraphQLQuery]` compiled chain** | **360.3 ns** | **0.71** | **1.60 KB** | **0.78**    |
+| `[GraphQLQuery]` chain, filtered    | 374.6 ns     | 0.74     | 1.60 KB     | 0.78        |
+| GraphQL.Client                      | 953.0 ns     | 1.88     | 4.39 KB     | 2.14        |
+
+**25 rows**
+
+| Method                              | Mean           | Ratio    | Allocated   | Alloc ratio |
+| ----------------------------------- | -------------- | -------- | ----------- | ----------- |
+| Static — a document you wrote       | 3,966.8 ns     | 1.00     | 7.30 KB     | 1.00        |
+| Static, with variables              | 3,966.6 ns     | 1.00     | 7.34 KB     | 1.01        |
+| **`[GraphQLQuery("…")]` declared**  | **2,685.5 ns** | **0.68** | **6.33 KB** | **0.87**    |
+| `[GraphQLQuery("…")]`, filtered     | 2,662.7 ns     | 0.67     | 6.28 KB     | 0.86        |
+| **`[GraphQLQuery]` compiled chain** | **2,630.7 ns** | **0.66** | **7.42 KB** | **1.02**    |
+| `[GraphQLQuery]` chain, filtered    | 2,660.8 ns     | 0.67     | 7.45 KB     | 1.02        |
+| GraphQL.Client                      | 4,539.8 ns     | 1.14     | 9.65 KB     | 1.32        |
+
+A compiled query is **about a third faster than posting the same document by hand**, and roughly
+**1.7× faster than GraphQL.Client**. Carrying a variable costs nothing measurable on either path.
+
+### What the numbers are and are not
+
+**The comparison is narrow on purpose.** The transport is canned, so no row pays for a socket, a
+server or a network — which is most of a real request. What is left is the part this library is
+responsible for: building a request and reading a reply. Treat the ratios as the shape of the
+difference, not as a speedup anyone will see end to end.
+
+**The difference is one thing, not many.** Both paths now build their body the same way, through
+the same pooled buffer. What separates them is that a compiled query had its document escaped and
+its selection set decided at build time, and the static rows do that per request. Allocation at 25
+rows is nearly level for the chain rows because the reply dominates, and the reply is the same
+bytes either way.
+
+**Timing moves under about 8% on generated rows are noise.** Editing the generator changes the
+generated file's contents, which moves code and shifts alignment; unchanged code measures stable
+to ~1% in a session, and rows whose source was regenerated do not. Judge generator changes on the
+`Allocated` column, which is deterministic.
+
+Raw tables are archived under [`docs/benchmarks/`](docs/benchmarks/), and
+[`EndOfDayReport-2026-09-12.md`](EndOfDayReport-2026-09-12.md) records how the measurement
+apparatus itself was tested, including the mistakes.
 
 ## Design notes
 

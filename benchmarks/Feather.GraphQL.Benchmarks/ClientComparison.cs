@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Text.Json;
 using BenchmarkDotNet.Attributes;
 using Feather.GraphQL.Http;
+using Feather.GraphQL.Serialization;
 using Feather.GraphQL.Linq.Filtering;
 using Feather.GraphQL.Linq.Providers;
 using Feather.GraphQL.Linq.Query;
@@ -22,6 +23,14 @@ namespace Feather.GraphQL.Benchmarks;
 public partial class ClientComparison
 {
     private const string ContinentCode = "EU";
+
+    /// <summary>The variables the filtered document binds.</summary>
+    /// <remarks>
+    /// Built once. A caller sending the same query repeatedly holds theirs the same way,
+    /// and rebuilding it per iteration would measure the dictionary rather than the request.
+    /// </remarks>
+    private static readonly Dictionary<string, object?> _continent =
+        new() { ["continent"] = ContinentCode };
 
     private const string Query =
         "query { countries { name continent { name } } }";
@@ -84,44 +93,17 @@ public partial class ClientComparison
     /// The same by hand, with the value bound to a variable.
     /// </summary>
     /// <remarks>
-    /// Posting a parameterized document means building the body too, which is what
-    /// <see cref="Envelope"/> does. The declared row below posts the same document with a body
-    /// the compiler wrote instead, so the pair measures what declaring saves over doing it by
-    /// hand — and both are the floor the LINQ rows are trying to reach.
+    /// A document and a dictionary, which is all a caller sending their own query has. The
+    /// declared row below sends the same document with a body the compiler wrote instead, so the
+    /// pair measures what declaring saves — and that is now only the escaping of the document
+    /// itself, since both build their body the same way.
     /// </remarks>
     [Benchmark(Description = "Static (filtered)")]
     public async Task<int> StaticFiltered()
     {
-        using var response = await _feather.PostGraphQLBodyAsync(Envelope(FilteredQuery, ContinentCode));
+        using var response = await _feather.SendGraphQLQueryAsync(FilteredQuery, _continent);
 
         return (await response.ReadGraphQLAsync<CountriesData>()).Countries.Length;
-    }
-
-    /// <summary>
-    /// The request body a hand-written parameterized document has to build for itself.
-    /// </summary>
-    /// <remarks>
-    /// Deliberately naive, because that is what this row is for: a serializer, the document
-    /// escaped on every call, and a buffer per request. The compiled and template rows do the
-    /// same work once at build time and copy the result, and the difference between them and this
-    /// is the whole measurement.
-    /// </remarks>
-    private static ReadOnlyMemory<byte> Envelope(string query, string continent)
-    {
-        var buffer = new ArrayBufferWriter<byte>(256);
-
-        using (var writer = new Utf8JsonWriter(buffer))
-        {
-            writer.WriteStartObject();
-            writer.WriteString("query"u8, query);
-            writer.WritePropertyName("variables"u8);
-            writer.WriteStartObject();
-            writer.WriteString("continent", continent);
-            writer.WriteEndObject();
-            writer.WriteEndObject();
-        }
-
-        return buffer.WrittenMemory;
     }
 
     // ---- declared: [GraphQLQuery] ------------------------------------------------------------
