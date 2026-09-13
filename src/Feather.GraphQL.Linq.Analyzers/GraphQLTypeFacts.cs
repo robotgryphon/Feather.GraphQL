@@ -1,4 +1,3 @@
-using Feather.GraphQL.Linq.Rules;
 using Microsoft.CodeAnalysis;
 
 namespace Feather.GraphQL.Linq.Analyzers;
@@ -8,11 +7,11 @@ namespace Feather.GraphQL.Linq.Analyzers;
 /// <see cref="System.Type"/>.
 /// </summary>
 /// <remarks>
-/// The <em>walk</em> is a second implementation — the compiler has no <see cref="System.Type"/>,
-/// so unwrapping and enumerating have to be written against symbols. The <em>rules</em> are not:
-/// this maps a symbol onto <c>TypeShape</c> and hands it to <c>GraphQLRules</c>, the same code the
-/// translator calls. A mapping that drifts shows up as a wrong shape; a rule that drifted would
-/// show up as a silently different selection set, which is why only one copy of it exists.
+/// The rules used to live behind an abstraction — a <c>TypeShape</c> struct both this and the
+/// runtime translator mapped onto, so that neither could drift from the other about what counts
+/// as a scalar. There is no runtime translator now, and nothing to drift from, so the rules are
+/// applied to symbols where they are read. Whatever this file says is what a selection set
+/// contains.
 /// </remarks>
 internal static class GraphQLTypeFacts
 {
@@ -62,20 +61,44 @@ internal static class GraphQLTypeFacts
         if (underlying.TypeKind == TypeKind.Error)
             return true;
 
-        return GraphQLRules.IsScalar(Shape(underlying));
+        if (IsPrimitive(underlying) || underlying.TypeKind == TypeKind.Enum)
+            return true;
+
+        string name = underlying.ToDisplayString(_metadataNames);
+
+        foreach (string scalar in _scalarTypes)
+        {
+            if (scalar == name)
+                return true;
+        }
+
+        // A framework value type nobody listed — a tuple, say — is still a leaf as far as a
+        // selection set is concerned. A user's struct is not.
+        return ElementType(underlying) is null
+            && underlying.IsValueType
+            && underlying.ContainingAssembly?.Name
+                is "System.Private.CoreLib" or "System.Runtime" or "mscorlib";
     }
 
     /// <summary>
-    /// Describes a symbol in the terms the shared rules are written in.
+    /// Framework types that are GraphQL scalars despite not being primitives.
     /// </summary>
-    private static TypeShape Shape(ITypeSymbol type)
-        => new(
-            type.ToDisplayString(_metadataNames),
-            IsPrimitive(type),
-            type.TypeKind == TypeKind.Enum,
-            type.IsValueType,
-            ElementType(type) is not null,
-            type.ContainingAssembly?.Name is "System.Private.CoreLib" or "System.Runtime" or "mscorlib");
+    /// <remarks>
+    /// Named the way the runtime names them — <c>System.String</c>, never the <c>string</c>
+    /// keyword — because that is the shape <see cref="_metadataNames"/> produces.
+    /// </remarks>
+    private static readonly string[] _scalarTypes =
+    [
+        "System.String",
+        "System.Decimal",
+        "System.Guid",
+        "System.DateTime",
+        "System.DateTimeOffset",
+        "System.DateOnly",
+        "System.TimeOnly",
+        "System.TimeSpan",
+        "System.Uri"
+    ];
 
     /// <summary>
     /// What <c>Type.IsPrimitive</c> answers true for — the CLR's own short list, which is
@@ -199,8 +222,21 @@ internal static class GraphQLTypeFacts
             }
         }
 
-        return GraphQLRules.FieldName(property.Name, json, member);
+        // The attribute that names it, then the other one, then the member camel-cased.
+        if (!string.IsNullOrEmpty(json))
+            return json!;
+
+        if (!string.IsNullOrEmpty(member))
+            return member!;
+
+        return CamelCase(property.Name);
     }
+
+    /// <summary>Lower-cases the first character, and only that.</summary>
+    public static string CamelCase(string name)
+        => name.Length == 0 || !char.IsUpper(name[0])
+            ? name
+            : char.ToLowerInvariant(name[0]) + name.Substring(1);
 
 }
 

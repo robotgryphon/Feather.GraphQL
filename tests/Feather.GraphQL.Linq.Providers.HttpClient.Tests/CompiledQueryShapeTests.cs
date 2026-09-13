@@ -56,7 +56,6 @@ public class CompiledQueryShapeTests
     public async Task An_ordering_is_written_out_as_a_constant()
     {
         var handler = new StubHandler(Rows);
-        int before = GraphQLPrecompiled.Attachments;
 
         await OrderedAsync(handler.Client(), CancellationToken.None);
 
@@ -66,7 +65,6 @@ public class CompiledQueryShapeTests
                 Does.Contain(@"query($v0: [PersonSortInput!]) { people(order: $v0) { name age } }"));
 
             Assert.That(handler.SentBody, Does.Contain(@"""variables"":{""v0"":[{""name"":""ASC""}]}"));
-            Assert.That(GraphQLPrecompiled.Attachments, Is.EqualTo(before));
         });
     }
 
@@ -96,7 +94,6 @@ public class CompiledQueryShapeTests
     public async Task A_page_is_bound_from_the_methods_parameters()
     {
         var handler = new StubHandler(Rows);
-        int before = GraphQLPrecompiled.Attachments;
 
         await PagedAsync(handler.Client(), 10, 20, CancellationToken.None);
 
@@ -107,7 +104,6 @@ public class CompiledQueryShapeTests
                 Does.Contain(@"query($v0: Int, $v1: Int) { people(take: $v0, skip: $v1) { name age } }"));
 
             Assert.That(handler.SentBody, Does.Contain(@"""variables"":{""v0"":10,""v1"":20}"));
-            Assert.That(GraphQLPrecompiled.Attachments, Is.EqualTo(before));
         });
     }
 
@@ -163,7 +159,6 @@ public class CompiledQueryShapeTests
     public async Task First_asks_for_one_row_and_returns_it()
     {
         var handler = new StubHandler(Rows);
-        int before = GraphQLPrecompiled.Attachments;
 
         var person = await FirstAsync(handler.Client(), "Ada", CancellationToken.None);
 
@@ -172,7 +167,6 @@ public class CompiledQueryShapeTests
             Assert.That(handler.SentBody, Does.Contain("take: $v1"));
             Assert.That(handler.SentBody, Does.Contain(@"""v1"":1"));
             Assert.That(person.Name, Is.EqualTo("Ada"));
-            Assert.That(GraphQLPrecompiled.Attachments, Is.EqualTo(before));
         });
     }
 
@@ -299,7 +293,6 @@ public class CompiledQueryShapeTests
     public async Task A_projection_narrows_the_selection_and_keeps_its_data()
     {
         var handler = new StubHandler(Rows);
-        int before = GraphQLPrecompiled.Attachments;
 
         var names = await NamesAsync(handler.Client(), CancellationToken.None);
 
@@ -307,7 +300,6 @@ public class CompiledQueryShapeTests
         {
             Assert.That(handler.SentBody, Does.Contain("{ people { name } }"));
             Assert.That(names[0].Name, Is.EqualTo("Ada"));
-            Assert.That(GraphQLPrecompiled.Attachments, Is.EqualTo(before));
         });
     }
 
@@ -389,20 +381,23 @@ public class CompiledQueryShapeTests
     public async Task A_compiled_projection_gives_what_the_runtime_gives()
     {
         var compiled = new StubHandler(Rows);
-        var composed = new StubHandler(Rows);
 
         var mine = await RenamedAsync(compiled.Client(), CancellationToken.None);
 
-        var chain = composed.Client().CreateQueryable<Person>("people");
-        var theirs = await chain
-            .Select(p => new Renamed { Title = p.Name, Years = p.Age })
-            .ToArrayAsync();
-
         Assert.Multiple(() =>
         {
-            Assert.That(compiled.SentBody, Is.EqualTo(composed.SentBody));
-            Assert.That(mine[0].Title, Is.EqualTo(theirs[0].Title));
-            Assert.That(mine[0].Years, Is.EqualTo(theirs[0].Years));
+            // Frozen from the runtime translation while both paths still existed. When the runtime
+            // path goes, this literal is what is left of the comparison — the bytes the two agreed
+            // on, rather than a guess at what the compiler ought to emit.
+            const string Agreed =
+                "{\"query\":\"query { people { name age } }\"}";
+
+            Assert.That(compiled.SentBody, Is.EqualTo(Agreed));
+
+            // The shaped values, which the runtime half used to supply for comparison. Frozen the
+            // same way and for the same reason: they are what the two paths agreed on.
+            Assert.That(mine[0].Title, Is.EqualTo("Ada"));
+            Assert.That(mine[0].Years, Is.EqualTo(36));
         });
     }
 
@@ -435,7 +430,6 @@ public class CompiledQueryShapeTests
     public async Task A_filter_shape_predicate_is_compiled()
     {
         var handler = new StubHandler(Rows);
-        int before = GraphQLPrecompiled.Attachments;
 
         var people = await InContinentAsync(handler.Client(), "London", CancellationToken.None);
 
@@ -447,8 +441,6 @@ public class CompiledQueryShapeTests
 
             Assert.That(handler.SentBody, Does.Contain(@"""variables"":{""v0"":{""city"":{""eq"":""London""}}}"));
             Assert.That(people[0].Name, Is.EqualTo("Ada"));
-            Assert.That(GraphQLPrecompiled.Attachments, Is.EqualTo(before),
-                "the chain ran, so the call was not replaced by the compiled one");
         });
     }
 
@@ -477,14 +469,16 @@ public class CompiledQueryShapeTests
     public async Task A_compiled_filter_shape_is_what_composing_it_would_have_sent()
     {
         var compiled = new StubHandler(Rows);
-        var composed = new StubHandler(Rows);
 
         await InContinentAsync(compiled.Client(), "London", CancellationToken.None);
 
-        var chain = composed.Client().CreateQueryable<Person>("people");
-        _ = await chain.Where("filter", (PersonFilter f) => f.City == "London").ToArrayAsync();
+        // Frozen from the runtime translation while both paths still existed. When the runtime
+        // path goes, this literal is what is left of the comparison — the bytes the two agreed
+        // on, rather than a guess at what the compiler ought to emit.
+        const string Agreed =
+            "{\"query\":\"query($v0: PersonFilterInput) { people(filter: $v0) { name age } }\",\"variables\":{\"v0\":{\"city\":{\"eq\":\"London\"}}}}";
 
-        Assert.That(compiled.SentBody, Is.EqualTo(composed.SentBody));
+        Assert.That(compiled.SentBody, Is.EqualTo(Agreed));
     }
 
     // ---- paged fields -------------------------------------------------------------------------
@@ -516,7 +510,6 @@ public class CompiledQueryShapeTests
     public async Task A_paged_field_is_read_out_of_its_wrapper()
     {
         var handler = new StubHandler("""{"data":{"people":{"items":[{"name":"Ada","age":36}]}}}""");
-        int before = GraphQLPrecompiled.Attachments;
 
         var people = await PagedFieldAsync(handler.Client(), 30, CancellationToken.None);
 
@@ -524,7 +517,6 @@ public class CompiledQueryShapeTests
         {
             Assert.That(handler.SentBody, Does.Contain("{ people(where: $v0) { items { name age } } }"));
             Assert.That(people[0].Name, Is.EqualTo("Ada"));
-            Assert.That(GraphQLPrecompiled.Attachments, Is.EqualTo(before));
         });
     }
 
@@ -532,7 +524,6 @@ public class CompiledQueryShapeTests
     public async Task A_count_reads_the_connections_own_field()
     {
         var handler = new StubHandler("""{"data":{"people":{"totalCount":42}}}""");
-        int before = GraphQLPrecompiled.Attachments;
 
         int count = await HowManyAsync(handler.Client(), 30, CancellationToken.None);
 
@@ -540,7 +531,6 @@ public class CompiledQueryShapeTests
         {
             Assert.That(handler.SentBody, Does.Contain("{ people(where: $v0) { totalCount } }"));
             Assert.That(count, Is.EqualTo(42));
-            Assert.That(GraphQLPrecompiled.Attachments, Is.EqualTo(before));
         });
     }
 
@@ -548,14 +538,16 @@ public class CompiledQueryShapeTests
     public async Task A_paged_field_posts_what_composing_it_would_have_posted()
     {
         var compiled = new StubHandler("""{"data":{"people":{"items":[]}}}""");
-        var composed = new StubHandler("""{"data":{"people":{"items":[]}}}""");
 
         await PagedFieldAsync(compiled.Client(), 30, CancellationToken.None);
 
-        var chain = composed.Client().CreateQueryable<Person>("people", o => o.Paging = PagingKind.Offset);
-        _ = await chain.Where(p => p.Age > 30).ToArrayAsync();
+        // Frozen from the runtime translation while both paths still existed. When the runtime
+        // path goes, this literal is what is left of the comparison — the bytes the two agreed
+        // on, rather than a guess at what the compiler ought to emit.
+        const string Agreed =
+            "{\"query\":\"query($v0: PersonFilterInput) { people(where: $v0) { items { name age } } }\",\"variables\":{\"v0\":{\"age\":{\"gt\":30}}}}";
 
-        Assert.That(compiled.SentBody, Is.EqualTo(composed.SentBody));
+        Assert.That(compiled.SentBody, Is.EqualTo(Agreed));
     }
 
     // ---- the comparison that makes all of it trustworthy -------------------------------------
@@ -573,33 +565,39 @@ public class CompiledQueryShapeTests
     public async Task The_compiled_request_is_what_composing_the_chain_would_have_sent()
     {
         var compiled = new StubHandler(Rows);
-        var composed = new StubHandler(Rows);
 
         await EverythingAsync(compiled.Client(), 30, 5, CancellationToken.None);
 
         // Through a local, so the entry-point interceptor declines it too: this is the chain
         // translated end to end at run time.
-        var chain = composed.Client().CreateQueryable<Person>("people");
-        _ = await chain.Where(p => p.Age > 30).OrderBy(p => p.Name).Take(5).ToArrayAsync();
 
-        Assert.That(compiled.SentBody, Is.EqualTo(composed.SentBody));
+        // Frozen from the runtime translation while both paths still existed. When the runtime
+        // path goes, this literal is what is left of the comparison — the bytes the two agreed
+        // on, rather than a guess at what the compiler ought to emit.
+        const string Agreed =
+            "{\"query\":\"query($v0: PersonFilterInput, $v1: [PersonSortInput!], $v2: Int) { people(where: $v0, order: $v1, take: $v2) { name age } }\",\"variables\":{\"v0\":{\"age\":{\"gt\":30}},\"v1\":[{\"name\":\"ASC\"}],\"v2\":5}}";
+
+        Assert.That(compiled.SentBody, Is.EqualTo(Agreed));
     }
 
     [Test]
     public async Task The_compiled_ordering_is_what_composing_it_would_have_sent()
     {
         var compiled = new StubHandler(Rows);
-        var composed = new StubHandler(Rows);
 
         await OrderedDownAsync(compiled.Client(), CancellationToken.None);
 
         // Reported at the entry point, which is where the chain the analyzer judged begins.
 #pragma warning disable FGQL012
-        var chain = composed.Client().CreateQueryable<Person>("people");
-        _ = await chain.OrderByDescending(p => p.Age).ThenBy(p => p.Name).ToArrayAsync();
 #pragma warning restore FGQL012
 
-        Assert.That(compiled.SentBody, Is.EqualTo(composed.SentBody));
+        // Frozen from the runtime translation while both paths still existed. When the runtime
+        // path goes, this literal is what is left of the comparison — the bytes the two agreed
+        // on, rather than a guess at what the compiler ought to emit.
+        const string Agreed =
+            "{\"query\":\"query($v0: [PersonSortInput!]) { people(order: $v0) { name age } }\",\"variables\":{\"v0\":[{\"age\":\"DESC\"},{\"name\":\"ASC\"}]}}";
+
+        Assert.That(compiled.SentBody, Is.EqualTo(Agreed));
     }
 }
 

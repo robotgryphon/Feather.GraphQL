@@ -63,8 +63,12 @@ public static class HttpClientGraphQLQueryableExtensions
             ArgumentNullException.ThrowIfNull(options);
             ArgumentException.ThrowIfNullOrWhiteSpace(options.RootField);
 
-            return GraphQLQueryable.For<T>(
-                new HttpGraphQLQueryExecutor(client, options.EndpointPath), options);
+            // The client is not handed over: a chain never sends anything. It is named here so
+            // the compiler can find it — the request is written where the call is replaced, and
+            // that is the only place a client is ever used.
+            _ = client;
+
+            return GraphQLQueryable.For<T>(options);
         }
 
         /// <summary>

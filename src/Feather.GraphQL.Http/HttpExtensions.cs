@@ -1,7 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Text.Json;
-using Feather.GraphQL.Http.Request;
 using Feather.GraphQL.Serialization;
 
 namespace Feather.GraphQL.Http;
@@ -30,32 +29,6 @@ public static class HttpExtensions
         var assembly = typeof(HttpExtensions).Assembly.GetName();
 
         return $"{assembly.Name}/{assembly.Version}";
-    }
-
-    extension(GraphQLRequest request)
-    {
-        private HttpRequestMessage AsHttpPost()
-        {
-            var message = new HttpRequestMessage { Method = HttpMethod.Post, Content = request.AsHttpMessageContent() };
-            message.AddGraphQLRequestHeaders();
-            return message;
-        }
-
-        /// <summary>
-        /// The request body, as the UTF-8 bytes that go on the wire.
-        /// </summary>
-        /// <remarks>
-        /// The content type is written unparsed and without a charset: <c>application/json</c> is
-        /// what some GraphQL servers insist on seeing.
-        /// </remarks>
-        private ByteArrayContent AsHttpMessageContent()
-        {
-            var content = new ByteArrayContent(GraphQLRequestWriter.ToUtf8(request));
-
-            content.Headers.TryAddWithoutValidation("Content-Type", JSON_CONTENT_TYPE);
-
-            return content;
-        }
     }
 
     extension(HttpRequestMessage message)
@@ -90,71 +63,67 @@ public static class HttpExtensions
             ArgumentException.ThrowIfNullOrEmpty(query);
             cancellationToken.ThrowIfCancellationRequested();
 
-            return await client.PostGraphQueryAsync(new GraphQLRequest(query), cancellationToken: cancellationToken)
+            using var body = PooledBody.Rent(query.Length + 16);
+
+            body.WriteRaw("{\"query\":"u8);
+            body.Write(query);
+            body.WriteRaw("}"u8);
+
+            return await client.PostGraphQLBodyAsync(body.Written, null, cancellationToken)
                     .ConfigureAwait(false);
         }
 
         /// <summary>
-        /// Posts a query with the values its variables take.
+        /// Posts a body that is already the bytes to send.
         /// </summary>
         /// <remarks>
-        /// What a <c>[GraphQLQuery]</c> method calls. The payload writes itself, so a declared
-        /// query reaches the wire without a dictionary, a node tree, or a boxed value anywhere
-        /// between the caller's arguments and the request body.
+        /// <para>
+        /// The entry point a compiled query uses. Its body was assembled from constants the
+        /// compiler printed and the values the caller passed, so there is nothing left for this to
+        /// serialize — the bytes go to the transport as they are, without being copied into an
+        /// array first.
+        /// </para>
+        /// <para>
+        /// The body must outlive the send, which it does: the request is awaited here, and a
+        /// caller disposes the body afterwards. Returning its buffer to the pool before this
+        /// returns would hand the same memory to someone else while it was still being read.
+        /// </para>
         /// </remarks>
-        /// <param name="query">The operation to send.</param>
-        /// <param name="variables">The values its variables take.</param>
-        /// <param name="cancellationToken">Cancels the request.</param>
-        public async ValueTask<HttpResponseMessage> SendGraphQLQueryAsync(
-                [StringSyntax("GraphQL")] string query,
-                IGraphQLVariables variables,
-                CancellationToken cancellationToken = default)
-        {
-            ArgumentException.ThrowIfNullOrEmpty(query);
-            ArgumentNullException.ThrowIfNull(variables);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            return await client
-                    .PostGraphQueryAsync(new GraphQLRequest(query, variables), cancellationToken: cancellationToken)
-                    .ConfigureAwait(false);
-        }
-
-        /// <summary>
-        /// Posts a request the LINQ integration translated. Internal: a request carries a
-        /// variables payload, and building one by hand is not part of the public surface.
-        /// </summary>
-        /// <param name="request">The translated request.</param>
+        /// <param name="body">The request body, as UTF-8 JSON.</param>
         /// <param name="endpoint">
         /// Where to post. A relative URI is resolved against the client's
         /// <see cref="HttpClient.BaseAddress"/> by <see cref="HttpClient"/> itself; null posts to
         /// the base address as-is.
         /// </param>
         /// <param name="cancellationToken">Cancels the request.</param>
-        internal async ValueTask<HttpResponseMessage> SendGraphQLRequestAsync(GraphQLRequest request,
+        public async ValueTask<HttpResponseMessage> PostGraphQLBodyAsync(
+                ReadOnlyMemory<byte> body,
                 Uri? endpoint = null,
                 CancellationToken cancellationToken = default)
         {
-            ArgumentNullException.ThrowIfNull(request);
-            ArgumentException.ThrowIfNullOrEmpty(request.Query);
+            if (body.IsEmpty)
+                throw new ArgumentException("A request body cannot be empty.", nameof(body));
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            return await client.PostGraphQueryAsync(request, endpoint, cancellationToken)
-                    .ConfigureAwait(false);
-        }
+            var content = new ReadOnlyMemoryContent(body);
 
-        private async ValueTask<HttpResponseMessage> PostGraphQueryAsync(GraphQLRequest request,
-                Uri? endpoint = null,
-                CancellationToken cancellationToken = default)
-        {
-            var req = request.AsHttpPost();
-            req.RequestUri = endpoint ?? client.BaseAddress;
+            content.Headers.TryAddWithoutValidation("Content-Type", JSON_CONTENT_TYPE);
 
-            // Headers only: the reply is buffered into pooled memory by whoever reads it, and
-            // letting HttpClient buffer it first would mean holding — and allocating — the same
-            // bytes twice.
+            var message = new HttpRequestMessage
+            {
+                Method = HttpMethod.Post,
+                Content = content,
+                RequestUri = endpoint ?? client.BaseAddress
+            };
+
+            message.AddGraphQLRequestHeaders();
+
+            // Headers only, for the reason the translated path gives: the reply is buffered into
+            // pooled memory by whoever reads it, and letting HttpClient buffer it first would mean
+            // holding the same bytes twice.
             return await client
-                    .SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                    .SendAsync(message, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                     .ConfigureAwait(false);
         }
     }

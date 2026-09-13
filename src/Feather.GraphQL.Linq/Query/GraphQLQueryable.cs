@@ -1,6 +1,5 @@
 using System.Collections;
 using System.Linq.Expressions;
-using Feather.GraphQL.Linq.Execution;
 using JetBrains.Annotations;
 
 namespace Feather.GraphQL.Linq.Query;
@@ -9,65 +8,38 @@ namespace Feather.GraphQL.Linq.Query;
 /// Where a GraphQL query starts.
 /// </summary>
 /// <remarks>
-/// Two forms, differing only in whether the query can run. Without an executor it translates and
-/// nothing more — <see cref="GraphQLQueryableExtensions.ToGraphQLQuery"/> is its terminal, and
-/// anything that would execute is <c>FGQL016</c>. With one, every LINQ terminal works.
+/// One form, because there is only one thing a chain is for. It names the field and the shape the
+/// compiler reads; the transport comes from the method the chain is the body of, and the chain
+/// itself never runs.
 /// </remarks>
 [PublicAPI]
 public static class GraphQLQueryable
 {
     /// <summary>
-    /// Starts a translate-only query over <typeparamref name="T"/>, queried through
-    /// <paramref name="rootField"/>.
-    /// </summary>
-    /// <param name="rootField">The field on the schema's <c>Query</c> type.</param>
-    /// <param name="configure">
-    /// Anything else the schema requires: the filter and sort input names, how it pages, the
-    /// filter dialect.
-    /// </param>
-    public static IQueryable<T> For<T>(
-        string rootField,
-        Action<GraphQLQueryOptions>? configure = null)
-        => Create<T>(executor: null, Configured(rootField, configure));
-
-    /// <summary>
-    /// Starts a query that runs through <paramref name="executor"/>.
-    /// </summary>
-    /// <param name="executor">
-    /// The transport. <c>Feather.GraphQL.Linq.Providers.HttpClient</c> supplies one over
-    /// <c>HttpClient</c>; anything else — a websocket, an in-process schema, a recorded fixture —
-    /// is one class.
-    /// </param>
-    /// <param name="rootField">The field on the schema's <c>Query</c> type.</param>
-    /// <param name="configure">Anything else the schema requires.</param>
-    public static IQueryable<T> For<T>(
-        IGraphQLQueryExecutor executor,
-        string rootField,
-        Action<GraphQLQueryOptions>? configure = null)
-    {
-        ArgumentNullException.ThrowIfNull(executor);
-
-        return Create<T>(executor, Configured(rootField, configure));
-    }
-
-    /// <summary>
-    /// Starts a query from options built elsewhere — shared across calls, or read from a
-    /// container.
+    /// Starts a query over a root field.
     /// </summary>
     /// <remarks>
-    /// <paramref name="options"/> is used as given, including its
-    /// <see cref="GraphQLQueryOptions.RootField"/>; a query with none is <c>FGQL011</c>.
+    /// No transport, because a chain never runs one. The compiler reads the root field from this
+    /// call and the client from the method the chain is the body of, so what a chain needs at run
+    /// time is decided before run time — and taking an executor here would be asking for
+    /// something nothing would ever use.
     /// </remarks>
-    public static IQueryable<T> For<T>(IGraphQLQueryExecutor executor, GraphQLQueryOptions options)
+    /// <param name="rootField">The field on the schema's <c>Query</c> type.</param>
+    /// <param name="configure">Anything else the schema requires.</param>
+    public static IQueryable<T> For<T>(string rootField, Action<GraphQLQueryOptions>? configure = null)
+        => Create<T>(Configured(rootField, configure));
+
+    /// <inheritdoc cref="For{T}(string, Action{GraphQLQueryOptions})"/>
+    /// <param name="options">Used as given, including its root field; one with none is FGQL011.</param>
+    public static IQueryable<T> For<T>(GraphQLQueryOptions options)
     {
-        ArgumentNullException.ThrowIfNull(executor);
         ArgumentNullException.ThrowIfNull(options);
 
-        return Create<T>(executor, options);
+        return Create<T>(options);
     }
 
-    private static IQueryable<T> Create<T>(IGraphQLQueryExecutor? executor, GraphQLQueryOptions options)
-        => new GraphQLQueryable<T>(new GraphQLQueryProvider(executor, options));
+    private static IQueryable<T> Create<T>(GraphQLQueryOptions options)
+        => new GraphQLQueryable<T>(new GraphQLQueryProvider(options));
 
     private static GraphQLQueryOptions Configured(string rootField, Action<GraphQLQueryOptions>? configure)
     {
@@ -81,7 +53,7 @@ public static class GraphQLQueryable
 }
 
 /// <inheritdoc cref="GraphQLQueryable"/>
-internal sealed class GraphQLQueryable<T> : IQueryable<T>, IOrderedQueryable<T>, IAsyncEnumerable<T>
+internal sealed class GraphQLQueryable<T> : IQueryable<T>, IOrderedQueryable<T>
 {
     private readonly GraphQLQueryProvider _provider;
 
@@ -108,17 +80,4 @@ internal sealed class GraphQLQueryable<T> : IQueryable<T>, IOrderedQueryable<T>,
     public IEnumerator<T> GetEnumerator() => _provider.ExecuteSequence<T>(Expression).GetEnumerator();
 
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
-
-    /// <summary>
-    /// Enumerates the query's rows as the transport reads them.
-    /// </summary>
-    /// <remarks>
-    /// Genuinely streamed, which the terminals deliberately are not. Reading the reply in one
-    /// span is faster when the whole sequence is wanted, and <c>ToArray</c>, <c>ToList</c> and
-    /// every result operator want exactly that; this is the caller who does not, and who may
-    /// stop before the end.
-    /// </remarks>
-    public IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default)
-        => _provider.StreamAsync<T>(Expression, cancellationToken)
-            .GetAsyncEnumerator(cancellationToken);
 }

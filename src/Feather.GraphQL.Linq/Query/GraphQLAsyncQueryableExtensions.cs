@@ -18,24 +18,6 @@ public static class GraphQLAsyncQueryableExtensions
 {
     extension<T>(IQueryable<T> source)
     {
-        /// <summary>
-        /// Exposes the query as an <see cref="IAsyncEnumerable{T}"/> for <c>await foreach</c>.
-        /// </summary>
-        /// <remarks>
-        /// Needed because <see cref="IQueryable{T}"/> does not itself declare
-        /// <c>GetAsyncEnumerator</c>, so the static type has to say so — the same reason EF Core
-        /// has this method.
-        /// </remarks>
-        public IAsyncEnumerable<T> AsAsyncEnumerable()
-        {
-            ArgumentNullException.ThrowIfNull(source);
-
-            return source as IAsyncEnumerable<T>
-                ?? throw new GraphQLTranslationException("FGQL019",
-                    $"'{source.GetType().Name}' is not a GraphQL queryable. Async enumeration "
-                    + "requires one created with GraphQLQueryable.For or CreateQueryable.");
-        }
-
         public async Task<List<T>> ToListAsync(CancellationToken cancellationToken = default)
             => [.. await Sequence(source, cancellationToken).ConfigureAwait(false)];
 
@@ -118,12 +100,9 @@ public static class GraphQLAsyncQueryableExtensions
     {
         ArgumentNullException.ThrowIfNull(source);
 
-        var call = predicate is null
-            ? Expression.Call(typeof(Queryable), method, [typeof(T)], source.Expression)
-            : Expression.Call(typeof(Queryable), method, [typeof(T)], source.Expression,
-                Expression.Quote(predicate));
-
-        return Provider(source).ExecuteAsync<TResult>(call, cancellationToken).AsTask();
+        // The terminal names the reduction; the compiler reads it and writes the request. Reaching
+        // this means the call was not replaced.
+        throw GraphQLTranslationException.NotCompiled();
     }
 
     /// <summary>

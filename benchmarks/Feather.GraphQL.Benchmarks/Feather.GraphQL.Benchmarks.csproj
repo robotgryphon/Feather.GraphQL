@@ -28,7 +28,8 @@
     <!-- Referenced as an analyzer so the metadata tables and interceptors land here too;
          benchmarking without them would measure a configuration nobody ships. -->
     <ProjectReference Include="..\..\src\Feather.GraphQL.Linq.Analyzers\Feather.GraphQL.Linq.Analyzers.csproj"
-                      OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+                      OutputItemType="Analyzer" ReferenceOutputAssembly="false"
+                      UndefineProperties="PublishAot;RuntimeIdentifier;SelfContained" />
   </ItemGroup>
 
 </Project>

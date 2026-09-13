@@ -159,7 +159,6 @@ public class InjectedClientTests
     {
         var handler = new StubHandler(Rows);
         var service = new CapturedClientService(handler.Client());
-        int before = GraphQLPrecompiled.Attachments;
 
         var people = await service.OlderThanAsync(30);
 
@@ -169,8 +168,6 @@ public class InjectedClientTests
                 Does.Contain(@"query($v0: PersonFilterInput) { people(where: $v0) { name age } }"));
 
             Assert.That(people[0].Name, Is.EqualTo("Ada"));
-            Assert.That(GraphQLPrecompiled.Attachments, Is.EqualTo(before),
-                "the chain ran, so the call was not replaced by the compiled one");
         });
     }
 
@@ -180,15 +177,12 @@ public class InjectedClientTests
     {
         var handler = new StubHandler(Rows);
         var service = new PrivateFieldChainService(handler.Client());
-        int before = GraphQLPrecompiled.Attachments;
 
         var people = await service.OlderThanAsync(30);
 
         Assert.Multiple(() =>
         {
             Assert.That(people[0].Name, Is.EqualTo("Ada"));
-            Assert.That(GraphQLPrecompiled.Attachments, Is.EqualTo(before),
-                "the chain ran, so the call was not replaced by the compiled one");
         });
     }
 
@@ -211,15 +205,12 @@ public class InjectedClientTests
     {
         var handler = new StubHandler(Rows);
         var service = new ReachableClientService(handler.Client());
-        int before = GraphQLPrecompiled.Attachments;
 
         var people = await service.OlderThanAsync(30);
 
         Assert.Multiple(() =>
         {
             Assert.That(people[0].Name, Is.EqualTo("Ada"));
-            Assert.That(GraphQLPrecompiled.Attachments, Is.EqualTo(before),
-                "the chain ran, so the call was not replaced by the compiled one");
         });
     }
 }

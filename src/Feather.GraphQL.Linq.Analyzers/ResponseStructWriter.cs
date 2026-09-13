@@ -194,7 +194,15 @@ internal static class ResponseStructWriter
 
             if (child.Order.Count > 0)
             {
-                var nested = Describe(prefix, property.Name, type, child, direct, taken);
+                // A nested object is built as the caller's own type wherever it can be, even when
+                // the row around it is a mirror. The mirror exists so a row has exactly the fields
+                // the query selected; a member does not need that, and building it as declared is
+                // what lets a projection pass the whole object through rather than only its
+                // scalars. Where the type cannot be built — no accessible way to set it — the
+                // mirror is still there to fall back on.
+                var nested = Describe(prefix, property.Name, type, child, direct: true, taken)
+                    ?? Describe(prefix, property.Name, type, child, direct, taken);
+
                 if (nested is null)
                     return null;
 

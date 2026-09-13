@@ -1,4 +1,11 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk" TreatAsLocalProperty="PublishAot;RuntimeIdentifier;SelfContained">
+  <PropertyGroup>
+    <!-- An analyzer runs in the compiler, never in a published app. A consumer publishing
+         with NativeAOT passes these to every project in its graph, and this one cannot
+         honour them. -->
+    <PublishAot>false</PublishAot>
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
   <PropertyGroup>
     <!-- Analyzers load into the compiler, which runs on .NET Standard 2.0. -->
     <TargetFramework>netstandard2.0</TargetFramework>
@@ -17,7 +24,6 @@
   <ItemGroup>
     <!-- Linked, not referenced: an analyzer carries its dependencies into the compiler, and one
          copy of a rule cannot drift from itself. -->
-    <Compile Include="..\Shared\GraphQLRules.cs" Link="Shared\GraphQLRules.cs" />
   </ItemGroup>
   <ItemGroup>
     <!-- Release tracking: the rule table, in the form the Roslyn analyzers check. -->

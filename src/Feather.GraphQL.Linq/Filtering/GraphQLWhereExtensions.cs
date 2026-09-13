@@ -128,12 +128,9 @@ public static class GraphQLWhereExtensions
             ArgumentNullException.ThrowIfNull(source);
             ArgumentNullException.ThrowIfNull(predicate);
 
-            return source.Provider.CreateQuery<T>(
-                Expression.Call(
-                    WhereShapeMethod.MakeGenericMethod(typeof(T), typeof(TFilter)),
-                    source.Expression,
-                    Expression.Quote(predicate),
-                    Expression.Constant(argumentName, typeof(string))));
+            // The filter's shape is printed by the compiler from this predicate's syntax. Nothing
+            // reads it as a tree, so nothing builds one.
+            throw GraphQLTranslationException.NotCompiled();
         }
     }
 }

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Feather.GraphQL.Example;
+using Feather.GraphQL;
 using Feather.GraphQL.Linq.Providers;
 using Feather.GraphQL.Linq.Filtering;
 using Feather.GraphQL.Linq.Query;
@@ -23,18 +24,10 @@ var client = serviceProvider
     .GetRequiredService<IHttpClientFactory>()
     .CreateClient("countries");
 
-IQueryable<GeographyIsFun> queryable = client.CreateQueryable<Country>("countries")
-    .Where("filter", (CountryFilter c) => c.Continent == "EU")
-    .Select(c => new GeographyIsFun(c.Name, c.Continent));
+// The chain lives in a method the compiler writes out in full — see Queries below. What goes on
+// the wire is decided at build time, so there is nothing here to compose, translate or print.
+var countries = await Queries.InEuropeAsync(client);
 
-var rawQuery = queryable.ToGraphQLQuery();
-
-Console.WriteLine();
-Console.WriteLine("query:");
-Console.WriteLine(rawQuery);
-
-Console.WriteLine();
-var countries = await queryable.ToArrayAsync();
 foreach (var country in countries)
 {
     Console.WriteLine();
@@ -45,6 +38,25 @@ foreach (var country in countries)
 sw.Stop();
 
 Console.WriteLine($"Elapsed: {sw.ElapsedMilliseconds} ms");
+
+/// <summary>
+/// The queries this program sends.
+/// </summary>
+/// <remarks>
+/// A chain isolated to a method is one the compiler can replace every call to: the document is
+/// printed at build time, the body below never runs, and the request is written from the
+/// arguments. To read the GraphQL it compiled to, open the generated file — your IDE lists it
+/// under the project's analyzers.
+/// </remarks>
+public static class Queries
+{
+    [GraphQLQuery]
+    public static Task<GeographyIsFun[]> InEuropeAsync(HttpClient client)
+        => client.CreateQueryable<Country>("countries")
+            .Where("filter", (CountryFilter c) => c.Continent == "EU")
+            .Select(c => new GeographyIsFun(c.Name, c.Continent))
+            .ToArrayAsync();
+}
 
 /// <summary>
 /// Models <c>CountryFilterInput</c>. Its <c>continent</c> takes a string filter directly, unlike

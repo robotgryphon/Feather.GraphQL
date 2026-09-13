@@ -108,11 +108,12 @@ public static class GraphQLJsonContextRegistry
 
     private static JsonSerializerOptions Build()
     {
-        // Registered contexts first, reflection last: a generated contract wins, and a type no
-        // context covers still materializes. That is the same fallback the field tables keep.
-        var chain = new List<IJsonTypeInfoResolver>(_resolvers.Count + 1);
-        chain.AddRange(_resolvers);
-        chain.Add(new DefaultJsonTypeInfoResolver());
+        // Registered contexts and nothing else. A reflection resolver used to sit at the end of
+        // this chain so that a type no context covered still materialized — which is exactly what
+        // an AOT build cannot do, and it made every read through this registry unanalyzable. A
+        // type nobody declared is now a clear failure at the point of reading rather than a
+        // silent dependence on reflection that only fails once published.
+        var chain = new List<IJsonTypeInfoResolver>(_resolvers);
 
         var options = new JsonSerializerOptions
         {

@@ -55,16 +55,6 @@ public class UnboundedQueryAnalyzerTests
             Is.Empty);
 
     /// <summary>
-    /// Translating is not executing, but the document it prints describes the same unbounded
-    /// request, so it is reported the same way.
-    /// </summary>
-    [Test]
-    public void Translating_an_unbounded_chain_is_still_FGQL012()
-        => Assert.That(
-            AnalyzerHarness.Diagnose("client.CreateQueryable<Country>(\"countries\").ToGraphQLQuery();"),
-            Is.EqualTo(new[] { "FGQL012" }));
-
-    /// <summary>
     /// A queryable that is not this library's has entirely different rules, and warning about
     /// one would be a false positive on unrelated code.
     /// </summary>

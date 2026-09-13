@@ -474,9 +474,6 @@ public sealed class GraphQLQueryMethodGenerator : IIncrementalGenerator
             builder.Append('\n');
 
             foreach (var (query, index) in group)
-                Variables(builder, query, index);
-
-            foreach (var (query, index) in group)
             {
                 string prefix = prefixes[index];
 
@@ -556,34 +553,25 @@ public sealed class GraphQLQueryMethodGenerator : IIncrementalGenerator
     {
         string token = query.CancellationToken ?? "default";
 
+        var plan = Body(query);
+
         builder.Append(indent).Append("/// <summary>Written by the compiler from this method's document.</summary>\n")
             .Append(indent).Append(query.Modifiers).Append(" async partial ")
             .Append(query.ReturnType).Append(' ')
             .Append(query.Method).Append('(').Append(query.Parameters).Append(")\n")
             .Append(indent).Append("{\n")
+            .Append(indent).Append("    // The envelope and the document are constants the compiler printed; only the\n")
+            .Append(indent).Append("    // values between them are written here.\n")
+            .Append(indent).Append("    using var body = global::Feather.GraphQL.Serialization.PooledBody.Rent(")
+            .Append(plan.ConstantLength).Append(");\n\n");
+
+        plan.Emit(builder, indent + "    ", "body");
+
+        builder.Append('\n')
             .Append(indent).Append("    using var response = await global::Feather.GraphQL.Http.HttpExtensions")
-            .Append(".SendGraphQLQueryAsync(").Append(query.Client).Append(",\n")
-            .Append(indent).Append("        ").Append(Literal(query.Document)).Append(",\n")
-            .Append(indent).Append("        ");
-
-        if (query.Variables.Length == 0)
-            builder.Append("global::Feather.GraphQL.GraphQLNoVariables.Instance");
-        else
-        {
-            builder.Append("new global::Feather.GraphQL.Generated.Variables").Append(index).Append('(');
-
-            for (int i = 0; i < query.Variables.Length; i++)
-            {
-                if (i > 0)
-                    builder.Append(", ");
-
-                builder.Append(query.Variables[i].Name);
-            }
-
-            builder.Append(')');
-        }
-
-        builder.Append(",\n")
+            .Append(".PostGraphQLBodyAsync(").Append(query.Client).Append(",\n")
+            .Append(indent).Append("        body.Written,\n")
+            .Append(indent).Append("        null,\n")
             .Append(indent).Append("        ").Append(token).Append(").ConfigureAwait(false);\n\n")
             .Append(indent).Append("    return ");
 
@@ -619,57 +607,42 @@ public sealed class GraphQLQueryMethodGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// The payload one declared query binds, written from the method's own parameters.
+    /// The request body this method posts, as constants and the values between them.
     /// </summary>
     /// <remarks>
-    /// A readonly struct, and the writes are typed: there is no dictionary, no node, and nothing
-    /// boxed between the caller's arguments and the bytes on the wire.
+    /// A declared query's document is a literal the author wrote, so the whole envelope around the
+    /// variables is known here: there is nothing to serialize at run time beyond the arguments the
+    /// method was handed.
     /// </remarks>
-    private static void Variables(StringBuilder builder, Query query, int index)
+    private static BodyPlan Body(Query query)
     {
+        var plan = new BodyPlan();
+
+        plan.Const("{");
+        plan.Property("query");
+        plan.Text(query.Document);
+
         if (query.Variables.Length == 0)
-            return;
+        {
+            plan.Const("}");
 
-        builder.Append("namespace Feather.GraphQL.Generated\n{\n")
-            .Append("    /// <summary>The variables of one <c>[GraphQLQuery]</c> method.</summary>\n")
-            .Append("    internal readonly struct Variables").Append(index)
-            .Append(" : global::Feather.GraphQL.IGraphQLVariables\n    {\n");
+            return plan;
+        }
 
-        foreach (var (name, type, _) in query.Variables)
-            builder.Append("        private readonly ").Append(type).Append(" _").Append(name).Append(";\n");
-
-        builder.Append("\n        public Variables").Append(index).Append('(');
+        plan.Const(",");
+        plan.Property("variables");
+        plan.Const("{");
 
         for (int i = 0; i < query.Variables.Length; i++)
         {
-            if (i > 0)
-                builder.Append(", ");
-
-            builder.Append(query.Variables[i].Type).Append(' ').Append(query.Variables[i].Name);
+            plan.Separated(i);
+            plan.Property(query.Variables[i].Name);
+            plan.Value(query.Variables[i].Name);
         }
 
-        builder.Append(")\n        {\n");
+        plan.Const("}}");
 
-        foreach (var (name, _, _) in query.Variables)
-            builder.Append("            _").Append(name).Append(" = ").Append(name).Append(";\n");
-
-        builder.Append("        }\n\n")
-            .Append("        public bool IsEmpty => false;\n\n")
-            .Append("        public void WriteTo(global::System.Text.Json.Utf8JsonWriter writer)\n        {\n")
-            .Append("            writer.WriteStartObject();\n");
-
-        foreach (var (name, _, boxed) in query.Variables)
-        {
-            builder.Append("            writer.WritePropertyName(\"").Append(name).Append("\");\n")
-                .Append("            global::Feather.GraphQL.GraphQLVariableWriter.Write(writer, ");
-
-            if (boxed)
-                builder.Append("(object?)");
-
-            builder.Append('_').Append(name).Append(");\n");
-        }
-
-        builder.Append("            writer.WriteEndObject();\n        }\n    }\n}\n\n");
+        return plan;
     }
 
     private static string Literal(string value)

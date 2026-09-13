@@ -1,12 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <!-- Turns on the trim and AOT analyzers, so anything a NativeAOT build cannot
+         see is a warning here rather than a failure in a consumer's publish. -->
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <PropertyGroup>
     <Description>LINQ / IQueryable translation to GraphQL for Feather.GraphQL</Description>
     <RootNamespace>Feather.GraphQL.Linq</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
     <!-- Linked, not referenced: an analyzer carries its dependencies into the compiler, and one
          copy of a rule cannot drift from itself. -->
-    <Compile Include="..\Shared\GraphQLRules.cs" Link="Shared\GraphQLRules.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Update="GitVersion.MsBuild">
@@ -39,14 +43,14 @@
          rule table by referencing the library. ReferenceOutputAssembly is false because the
          library does not call into it; the reference exists to order the build. -->
     <ProjectReference Include="..\Feather.GraphQL.Linq.Analyzers\Feather.GraphQL.Linq.Analyzers.csproj"
-                      ReferenceOutputAssembly="false" PrivateAssets="all" />
-  </ItemGroup>
-  <ItemGroup>
-    <!-- Turns on the interceptor namespace in every consuming project; see the props itself. -->
-    <None Include="build\Feather.GraphQL.Linq.props" Pack="true" PackagePath="build" Visible="false" />
+                      ReferenceOutputAssembly="false" PrivateAssets="all"
+                      UndefineProperties="PublishAot;RuntimeIdentifier;SelfContained" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\Feather.GraphQL.Linq.Analyzers\bin\$(Configuration)\netstandard2.0\Feather.GraphQL.Linq.Analyzers.dll"
           Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="Attributes\" />
   </ItemGroup>
 </Project>

@@ -1,5 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <!-- Turns on the trim and AOT analyzers, so anything a NativeAOT build cannot
+         see is a warning here rather than a failure in a consumer's publish. -->
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <PropertyGroup>
     <Description>The contract between a GraphQL query and the code that runs it: the variables a query binds, the attributes that declare one, and the exception every transport fails with</Description>
     <RootNamespace>Feather.GraphQL</RootNamespace>
   </PropertyGroup>

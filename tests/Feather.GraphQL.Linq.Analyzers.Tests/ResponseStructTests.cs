@@ -46,8 +46,13 @@ public class ResponseStructTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(source, Does.Contain("file readonly struct CountriesByCode_Continent"));
-            Assert.That(source, Does.Contain("public readonly CountriesByCode_Continent Continent;"));
+            // Its own reader, but the declared type rather than a mirror of it: what a nested
+            // object needs is to be read field by field, not to be a different type while it is.
+            Assert.That(source, Does.Contain("CountriesByCode_ContinentReader"));
+
+            Assert.That(
+                source,
+                Does.Contain("public readonly global::Feather.GraphQL.Linq.Analyzers.Tests.Continent Continent;"));
 
             // The nested struct is written first, so the one that holds it can name it.
             Assert.That(
@@ -138,7 +143,12 @@ public class ResponseStructTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(source, Does.Contain("public readonly CountriesByCode_Countries[] Countries;"));
+            // The elements are the declared type, not a mirror of it — see
+            // With_a_projection_the_mirror_keeps_the_queried_types_names for why.
+            Assert.That(
+                source,
+                Does.Contain("public readonly global::Feather.GraphQL.Linq.Analyzers.Tests.Country[] Countries;"));
+
             Assert.That(source, Does.Contain("JsonTokenType.EndArray"));
         });
     }
@@ -316,13 +326,21 @@ public class ResponseStructTests
     }
 
     /// <summary>
-    /// With a projection, the payload is mirrored — and the mirror's members carry the queried
-    /// type's own names, so the projection compiles against it unchanged.
+    /// With a projection, the row is mirrored — and the mirror's members carry the queried type's
+    /// own names, so the projection compiles against it unchanged.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// That is what makes the remapping free to generate: <c>c => new Row { Title = c.Name }</c>
     /// needs no rewriting to run over <c>CountriesByCode_Row</c>, because <c>c.Name</c> means the
     /// same thing on both.
+    /// </para>
+    /// <para>
+    /// A member that is itself an object is the declared type rather than a mirror of it. The
+    /// mirror exists so a row carries exactly the selected fields; a member needs no such thing,
+    /// and building it as declared is what lets a projection pass the whole object along —
+    /// <c>new Summary(c.Name, c.Continent)</c> — instead of only its scalars.
+    /// </para>
     /// </remarks>
     [Test]
     public void With_a_projection_the_mirror_keeps_the_queried_types_names()
@@ -333,7 +351,10 @@ public class ResponseStructTests
         {
             Assert.That(source, Does.Contain("struct CountriesByCode_Row"));
             Assert.That(source, Does.Contain("public readonly string Name;"));
-            Assert.That(source, Does.Contain("public readonly CountriesByCode_Continent Continent;"));
+
+            Assert.That(
+                source,
+                Does.Contain("public readonly global::Feather.GraphQL.Linq.Analyzers.Tests.Continent Continent;"));
         });
     }
 }

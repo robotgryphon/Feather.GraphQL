@@ -500,7 +500,7 @@ internal static class QueryChainReader
     {
         var kind = consumer.Name switch
         {
-            "ToArrayAsync" or "ToListAsync" or "AsAsyncEnumerable" => ResultKind.Sequence,
+            "ToArrayAsync" or "ToListAsync" => ResultKind.Sequence,
             "FirstAsync" => ResultKind.First,
             "FirstOrDefaultAsync" => ResultKind.FirstOrDefault,
             "SingleAsync" => ResultKind.Single,

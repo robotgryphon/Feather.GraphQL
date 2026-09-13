@@ -1,5 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <!-- Turns on the trim and AOT analyzers, so anything a NativeAOT build cannot
+         see is a warning here rather than a failure in a consumer's publish. -->
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <PropertyGroup>
     <Description>HttpClient transport for the Feather.GraphQL LINQ provider</Description>
     <!-- Namespace deliberately stops short of the package name: a namespace ending in
          `HttpClient` would shadow the type of the same name in every file that used it. -->

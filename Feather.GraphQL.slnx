@@ -6,8 +6,10 @@
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/Feather.GraphQL.Benchmarks/Feather.GraphQL.Benchmarks.csproj" />
     <Project Path="benchmarks/Feather.GraphQL.Serialization.Benchmarks/Feather.GraphQL.Serialization.Benchmarks.csproj" />
-    <Project Path="benchmarks/Feather.GraphQL.Benchmarks.Interpreted/Feather.GraphQL.Benchmarks.Interpreted.csproj" />
     <Project Path="benchmarks/Feather.GraphQL.Benchmarks.Profiling/Feather.GraphQL.Benchmarks.Profiling.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/Feather.GraphQL.AotSmoke/Feather.GraphQL.AotSmoke.csproj" />
   </Folder>
   <Folder Name="/examples/">
     <Project Path="examples/Feather.GraphQL.Example/Feather.GraphQL.Example.csproj" />
@@ -39,7 +41,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/Feather.GraphQL.Tests/Feather.GraphQL.Tests.csproj" />
     <Project Path="tests/Feather.GraphQL.Serialization.Tests/Feather.GraphQL.Serialization.Tests.csproj" />
-    <Project Path="tests/Feather.GraphQL.Linq.Tests/Feather.GraphQL.Linq.Tests.csproj" />
+    <Project Path="tests/Feather.GraphQL.Http.Tests/Feather.GraphQL.Http.Tests.csproj" />
     <Project Path="tests/Feather.GraphQL.Linq.Providers.HttpClient.Tests/Feather.GraphQL.Linq.Providers.HttpClient.Tests.csproj" />
     <Project Path="tests/Feather.GraphQL.Linq.Analyzers.Tests/Feather.GraphQL.Linq.Analyzers.Tests.csproj" />
   </Folder>

@@ -43,10 +43,9 @@ public static class GraphQLArgumentExtensions
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(arguments);
 
-        return source.Provider.CreateQuery<T>(
-            Expression.Call(
-                WithGraphQLArgumentsMethod.MakeGenericMethod(typeof(T)),
-                source.Expression,
-                Expression.Constant(arguments)));
+        // Composed at build time, not here. What this call means is read off the source by the
+        // compiler; the body exists so the call typechecks, and is replaced along with the rest
+        // of the chain it belongs to.
+        throw GraphQLTranslationException.NotCompiled();
     }
 }

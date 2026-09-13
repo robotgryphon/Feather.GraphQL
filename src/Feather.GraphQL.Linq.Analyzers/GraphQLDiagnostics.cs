@@ -48,22 +48,23 @@ internal static class GraphQLDiagnostics
 
     /// <summary>A chain marked for compilation that the compiler could not compile.</summary>
     /// <remarks>
-    /// Reported because the attribute would otherwise do nothing at all, silently: the method
-    /// keeps its body and the body keeps working, so the only visible consequence of a declined
-    /// chain is the saving that did not happen. The message names the reason, because the fix is
-    /// almost always to change the chain rather than to remove the attribute.
+    /// An error, because there is nothing left for a declined chain to fall back to. It was a
+    /// warning while the runtime translation existed and the only consequence was the saving that
+    /// did not happen; now the consequence is a query that cannot be sent at all. The message
+    /// names the reason, because the fix is to change the chain — or to stop using a chain and
+    /// write the query some other way.
     /// </remarks>
     public static readonly DiagnosticDescriptor NotCompiled = new(
         "FGQL015",
         "This query was not compiled",
-        "'{0}' is marked [GraphQLQuery] but was left to the runtime: {1}. The method still "
-        + "works as written; it just composes its chain on every call.",
+        "'{0}' cannot be compiled: {1}. Change the chain so that it can be, or write the query "
+        + "yourself and send it with SendGraphQLQueryAsync.",
         CATEGORY,
-        DiagnosticSeverity.Warning,
+        DiagnosticSeverity.Error,
         isEnabledByDefault: true,
-        description: "A compiled query is one whose document and payload the compiler could write "
-        + "out in full. What it can write out is bounded, and a chain outside those bounds keeps "
-        + "the runtime translation it would have had without the attribute.");
+        description: "A compiled query is one whose document and payload the compiler can write "
+        + "out in full. What it can write out is bounded, and a chain outside those bounds has "
+        + "nowhere to go — there is no runtime translation behind it any more.");
 
     /// <summary>A declared query whose reply the compiler could not model.</summary>
     /// <remarks>
@@ -84,4 +85,59 @@ internal static class GraphQLDiagnostics
         description: "A declared query is implemented by a reader written from its document and "
         + "its return type. Where the two do not describe a reply that can be read, there is "
         + "nothing to write and the method would be left unimplemented.");
+
+    /// <summary>
+    /// A chain written somewhere the compiler cannot replace it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A compiled query is a <c>[GraphQLQuery]</c> method whose call sites are replaced by what
+    /// its chain compiles to. A chain written anywhere else has no call site to replace and no
+    /// method to stand for it, so nothing can be printed for it at build time.
+    /// </para>
+    /// <para>
+    /// An error, now that the runtime translation is gone. Such a chain used to run the slow way;
+    /// it now composes against a provider that refuses, so the fault is worth finding at build
+    /// time. The fix is to move the chain into a method and mark it — or to stop using a chain
+    /// for this query and write it out.
+    /// </para>
+    /// </remarks>
+    public static readonly DiagnosticDescriptor NotIsolated = new(
+        "FGQL017",
+        "This query cannot be compiled where it is written",
+        "A query chain outside a [GraphQLQuery] method cannot be compiled, and nothing runs one. "
+        + "Move it into a method marked [GraphQLQuery], or write the query yourself and send it "
+        + "with SendGraphQLQueryAsync.",
+        CATEGORY,
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        description: "The compiler writes a query out by replacing the calls to the method that "
+        + "declares it. A chain that is not a method's body has no calls to replace.");
+
+    /// <summary>
+    /// A compiled query reached other than by calling it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Interceptors replace call sites. A method group, a delegate or a reflective call is not a
+    /// call site the compiler saw, so it reaches the method's real body — the chain, composed
+    /// and translated the slow way, or once the runtime path is gone, not at all.
+    /// </para>
+    /// <para>
+    /// Worth its own rule because nothing else would say anything. The method compiles, the calls
+    /// that are direct are replaced, and the one that is not silently does something else.
+    /// </para>
+    /// </remarks>
+    public static readonly DiagnosticDescriptor NotInvoked = new(
+        "FGQL018",
+        "This compiled query is not being called",
+        "'{0}' is marked [GraphQLQuery] but is used here as a value rather than called. Only a "
+        + "direct call is replaced by the compiled query, so this one would reach a body that "
+        + "cannot run.",
+        CATEGORY,
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        description: "A compiled query replaces the calls the compiler can see. Taking the method "
+        + "as a delegate hides the call, and what runs is the body rather than what it compiled "
+        + "to.");
 }

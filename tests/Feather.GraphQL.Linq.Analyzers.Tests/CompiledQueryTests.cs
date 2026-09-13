@@ -38,15 +38,17 @@ public class CompiledQueryTests
             Assert.That(run.Source,
                 Does.Contain("query($v0: CountryFilterInput) { countries(where: $v0) { name code } }"));
 
-            // The value arrives as an argument, so the payload is written from it directly —
-            // no tree, and nothing read back out of one.
-            Assert.That(run.Source, Does.Contain("new Variables0(name)"));
-            Assert.That(run.Source, Does.Contain("GraphQLVariableWriter.Write(writer, _0)"));
+            // The value arrives as an argument, so the body is written from it directly — no
+            // tree, nothing read back out of one, and no payload type between the two.
+            Assert.That(run.Source, Does.Contain("body.Write(name)"));
+
+            // Everything around the value was printed by the compiler and is copied, not built.
+            Assert.That(run.Source, Does.Contain("""\"variables\":{\"v0\":{\"name\":{\"eq\":"""));
             Assert.That(run.Diagnostics, Is.Empty);
         });
     }
 
-    /// <summary>A chain that binds nothing needs no payload at all.</summary>
+    /// <summary>A chain that binds nothing is a body with nothing to write into it.</summary>
     [Test]
     public void A_chain_that_binds_nothing_posts_the_shared_empty_payload()
     {
@@ -56,7 +58,18 @@ public class CompiledQueryTests
                 => client.CreateQueryable<Country>("countries").ToArrayAsync(token);
             """);
 
-        Assert.That(run.Source, Does.Contain("GraphQLNoVariables.Instance"));
+        Assert.Multiple(() =>
+        {
+            // No variables member, and so nothing at all left to do at run time: the whole body
+            // is one constant the compiler already wrote.
+            Assert.That(run.Source,
+                Does.Contain("""body.WriteRaw("{\"query\":\"query { countries { name code } }\"}"u8);"""));
+
+            Assert.That(run.Source, Does.Not.Contain("body.Write("));
+
+            // The member, not the word — the comment above the body says "variables" too.
+            Assert.That(run.Source, Does.Not.Contain("\\\"variables\\\""));
+        });
     }
 
     /// <summary>
@@ -135,7 +148,8 @@ public class CompiledQueryTests
         Assert.Multiple(() =>
         {
             Assert.That(run.Source, Does.Contain("query($v0: [CountrySortInput!]) { countries(order: $v0) { name code } }"));
-            Assert.That(run.Source, Does.Contain("writer.WriteStringValue(\"DESC\")"));
+            // An ordering binds nothing, so the whole sort argument is part of the constant.
+            Assert.That(run.Source, Does.Contain("""\"v0\":[{\"name\":\"DESC\"}]"""));
             Assert.That(run.Diagnostics, Is.Empty);
         });
     }
@@ -153,7 +167,7 @@ public class CompiledQueryTests
         Assert.Multiple(() =>
         {
             Assert.That(run.Source, Does.Contain("{ countries(take: $v0) { name code } }"));
-            Assert.That(run.Source, Does.Contain("new Variables0(size)"));
+            Assert.That(run.Source, Does.Contain("body.Write(size)"));
             Assert.That(run.Diagnostics, Is.Empty);
         });
     }
@@ -177,7 +191,7 @@ public class CompiledQueryTests
         Assert.Multiple(() =>
         {
             Assert.That(run.Source, Does.Contain("take: $v1"));
-            Assert.That(run.Source, Does.Contain("writer.WriteNumberValue(1)"));
+            Assert.That(run.Source, Does.Contain("""\"v1\":1}}"""));
             Assert.That(run.Source, Does.Contain("The query returned no elements."));
             Assert.That(run.Diagnostics, Is.Empty);
         });
@@ -449,8 +463,11 @@ public class CompiledQueryTests
         {
             // The document became the partial method's body, and nothing intercepted its calls.
             Assert.That(declared, Does.Contain("partial global::System.Threading.Tasks.Task"));
-            Assert.That(declared, Does.Contain("Written"));
-            Assert.That(compiled, Does.Not.Contain("Written"));
+            Assert.That(declared, Does.Contain("Written("));
+
+            // Named for the method rather than searched for as a word: the compiled file writes
+            // `body.Written`, which is not this method and never was.
+            Assert.That(compiled, Does.Not.Contain("Written("));
 
             // The chain became an interceptor, and the document generator left it alone.
             Assert.That(compiled, Does.Contain("InterceptsLocationAttribute"));

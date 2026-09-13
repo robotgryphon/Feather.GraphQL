@@ -22,14 +22,48 @@ internal sealed record FilterHole(string Type, string? Binding = null);
 /// nest is decided by the predicate's <em>syntax</em>, while only the leaves wait for the
 /// expression tree. This is the first half, emitted as the body of a <c>WriteTo</c>.
 /// </remarks>
-internal sealed class FilterSkeletonModel(string body, IReadOnlyList<FilterHole> holes)
+internal sealed class FilterSkeletonModel(
+    IReadOnlyList<FilterStep> steps,
+    IReadOnlyList<FilterHole> holes)
 {
-    /// <summary>The C# that writes this filter, given fields named <c>_0</c>, <c>_1</c>, …</summary>
-    public string Body { get; } = body;
+    /// <summary>The filter as constant JSON and the places values go.</summary>
+    /// <remarks>
+    /// One rendering, for both the generators that use it. There were two while the precompiled
+    /// plan still handed its values to a <c>Utf8JsonWriter</c> someone else owned; now that it
+    /// writes its own bytes like everything else, the shape is written out one way.
+    /// </remarks>
+    public IReadOnlyList<FilterStep> Steps { get; } = steps;
 
     /// <summary>The values to fill, in the order the runtime will collect them.</summary>
     public IReadOnlyList<FilterHole> Holes { get; } = holes;
+
+    /// <summary>
+    /// Whether two call sites printed the same filter.
+    /// </summary>
+    /// <remarks>
+    /// Compared by shape rather than by the code that renders it, which is the same question
+    /// asked of the thing that answers it: two chains agree when they filter the same fields with
+    /// the same operations in the same order, whatever their values turn out to be.
+    /// </remarks>
+    public bool SameShapeAs(FilterSkeletonModel other)
+    {
+        if (Steps.Count != other.Steps.Count)
+            return false;
+
+        for (int i = 0; i < Steps.Count; i++)
+        {
+            if (Steps[i] != other.Steps[i])
+                return false;
+        }
+
+        return true;
+    }
 }
+
+/// <summary>One run of a filter: constant JSON, or the hole a value fills.</summary>
+/// <param name="Json">The constant, when this is one.</param>
+/// <param name="Hole">Which value goes here, or -1 for a constant.</param>
+internal readonly record struct FilterStep(string Json, int Hole);
 
 /// <summary>
 /// Renders a predicate's filter shape into the code that writes it.
@@ -242,15 +276,17 @@ internal static class FilterSkeleton
             }
         }
 
-        var body = new StringBuilder();
+        var steps = new StepBuilder();
         var holes = new List<FilterHole>();
 
         // The filter object itself, which sits as the value of the variable the document declares.
-        body.Append("            writer.WriteStartObject();\n");
-        Write(body, clauses, prefix: [], depth: 0, holes);
-        body.Append("            writer.WriteEndObject();\n");
+        steps.Const("{");
 
-        return new FilterSkeletonModel(body.ToString(), holes);
+        Write(steps, clauses, prefix: [], depth: 0, holes);
+
+        steps.Const("}");
+
+        return new FilterSkeletonModel(steps.Steps, holes);
     }
 
     /// <summary>Two clauses collide when one's path is a prefix of the other's, or they match.</summary>
@@ -268,13 +304,12 @@ internal static class FilterSkeleton
 
     /// <summary>Emits every clause under one prefix, grouping those that descend together.</summary>
     private static void Write(
-        StringBuilder body,
+        StepBuilder steps,
         List<Clause> clauses,
         List<string> prefix,
         int depth,
         List<FilterHole> holes)
     {
-        string indent = new(' ', 16);
         var written = new HashSet<string>();
 
         foreach (var clause in clauses)
@@ -283,17 +318,19 @@ internal static class FilterSkeleton
                 continue;
 
             string segment = clause.Path[depth];
+
+            // A writer puts its own commas in; bytes do not, so this level separates its members.
+            steps.Separated(written.Count);
             written.Add(segment);
 
-            body.Append(indent).Append("writer.WritePropertyName(\"").Append(segment).Append("\");\n");
+            steps.Property(segment);
 
             if (clause.Path.Count == depth + 1)
             {
-                body.Append(indent).Append("writer.WriteStartObject();\n")
-                    .Append(indent).Append("writer.WritePropertyName(\"").Append(clause.Operation).Append("\");\n")
-                    .Append(indent).Append("global::Feather.GraphQL.GraphQLVariableWriter.Write(writer, _")
-                    .Append(holes.Count).Append(");\n")
-                    .Append(indent).Append("writer.WriteEndObject();\n");
+                steps.Const("{");
+                steps.Property(clause.Operation);
+                steps.Hole(holes.Count);
+                steps.Const("}");
 
                 holes.Add(new FilterHole(clause.ValueType, clause.Binding));
                 continue;
@@ -301,9 +338,58 @@ internal static class FilterSkeleton
 
             var deeper = new List<string>(prefix) { segment };
 
-            body.Append(indent).Append("writer.WriteStartObject();\n");
-            Write(body, clauses, deeper, depth + 1, holes);
-            body.Append(indent).Append("writer.WriteEndObject();\n");
+            steps.Const("{");
+
+            Write(steps, clauses, deeper, depth + 1, holes);
+
+            steps.Const("}");
+        }
+    }
+
+    /// <summary>Collects a filter's runs, merging constants as they arrive.</summary>
+    private sealed class StepBuilder
+    {
+        private readonly StringBuilder _constant = new();
+        private readonly List<FilterStep> _steps = [];
+
+        public IReadOnlyList<FilterStep> Steps
+        {
+            get
+            {
+                Flush();
+
+                return _steps;
+            }
+        }
+
+        public void Const(string json) => _constant.Append(json);
+
+        public void Separated(int written)
+        {
+            if (written > 0)
+                _constant.Append(',');
+        }
+
+        public void Property(string name)
+        {
+            _constant.Append('"');
+            BodyPlan.Json(_constant, name);
+            _constant.Append("\":");
+        }
+
+        public void Hole(int index)
+        {
+            Flush();
+            _steps.Add(new FilterStep("", index));
+        }
+
+        private void Flush()
+        {
+            if (_constant.Length == 0)
+                return;
+
+            _steps.Add(new FilterStep(_constant.ToString(), -1));
+            _constant.Clear();
         }
     }
 

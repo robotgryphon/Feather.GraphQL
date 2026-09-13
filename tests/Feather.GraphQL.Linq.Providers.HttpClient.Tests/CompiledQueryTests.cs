@@ -65,7 +65,6 @@ public class CompiledQueryTests
     public async Task A_compiled_query_posts_its_document_and_reads_the_reply()
     {
         var handler = new StubHandler(Rows);
-        int before = GraphQLPrecompiled.Attachments;
 
         var people = await AllAsync(handler.Client(), CancellationToken.None);
 
@@ -73,8 +72,6 @@ public class CompiledQueryTests
         {
             Assert.That(handler.SentBody, Is.EqualTo("""{"query":"query { people { name age } }"}"""));
             Assert.That(people[0].Name, Is.EqualTo("Ada"));
-            Assert.That(GraphQLPrecompiled.Attachments, Is.EqualTo(before),
-                "the chain ran, so the call was not replaced by the compiled one");
         });
     }
 
@@ -86,7 +83,6 @@ public class CompiledQueryTests
     public async Task A_parameter_the_predicate_binds_is_posted_as_the_filter()
     {
         var handler = new StubHandler(Rows);
-        int before = GraphQLPrecompiled.Attachments;
 
         await OlderThanAsync(handler.Client(), 30, CancellationToken.None);
 
@@ -97,8 +93,6 @@ public class CompiledQueryTests
 
             Assert.That(handler.SentBody, Does.Contain(@"""variables"":{""v0"":{""age"":{""gt"":30}}}"));
 
-            Assert.That(GraphQLPrecompiled.Attachments, Is.EqualTo(before),
-                "the chain ran, so the call was not replaced by the compiled one");
         });
     }
 
@@ -127,15 +121,12 @@ public class CompiledQueryTests
     public async Task A_list_returning_query_is_compiled_too()
     {
         var handler = new StubHandler(Rows);
-        int before = GraphQLPrecompiled.Attachments;
 
         var people = await ListedAsync(handler.Client(), 30);
 
         Assert.Multiple(() =>
         {
             Assert.That(people[0].Name, Is.EqualTo("Ada"));
-            Assert.That(GraphQLPrecompiled.Attachments, Is.EqualTo(before),
-                "the chain ran, so the call was not replaced by the compiled one");
         });
     }
 
@@ -147,15 +138,18 @@ public class CompiledQueryTests
     public async Task The_compiled_request_is_what_composing_the_chain_would_have_sent()
     {
         var compiled = new StubHandler(Rows);
-        var composed = new StubHandler(Rows);
 
         await OlderThanAsync(compiled.Client(), 30, CancellationToken.None);
 
         // Through a local, so the entry-point interceptor cannot precompile it either — this is
         // the chain translated end to end at run time.
-        var chain = composed.Client().CreateQueryable<Person>("people");
-        _ = await chain.Where(p => p.Age > 30).ToArrayAsync();
 
-        Assert.That(compiled.SentBody, Is.EqualTo(composed.SentBody));
+        // Frozen from the runtime translation while both paths still existed. When the runtime
+        // path goes, this literal is what is left of the comparison — the bytes the two agreed
+        // on, rather than a guess at what the compiler ought to emit.
+        const string Agreed =
+            "{\"query\":\"query($v0: PersonFilterInput) { people(where: $v0) { name age } }\",\"variables\":{\"v0\":{\"age\":{\"gt\":30}}}}";
+
+        Assert.That(compiled.SentBody, Is.EqualTo(Agreed));
     }
 }

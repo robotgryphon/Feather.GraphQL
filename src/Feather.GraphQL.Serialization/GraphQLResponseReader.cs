@@ -24,13 +24,8 @@ internal static class GraphQLResponseReader
 
         try
         {
-            var contract = Contract<TData>.Current;
-
-            // The span overload, not the one taking a reader: given the whole document at once
-            // the serializer takes a single-buffer path that a Utf8JsonReader — which must allow
-            // for more segments to come — cannot, and which is worth about a third of the time
-            // spent here on a large reply.
-            return JsonSerializer.Deserialize(body.Span, contract) ?? new GraphQLReply<TData>();
+            return JsonSerializer.Deserialize(body.Span, Contract<TData>.Current)
+                ?? new GraphQLReply<TData>();
         }
         catch (JsonException) when (Errors(body) is { Length: > 0 } errors)
         {
@@ -73,7 +68,7 @@ internal static class GraphQLResponseReader
                 if (_current is { } cached && ReferenceEquals(cached.Options, options))
                     return cached.Info;
 
-                var info = (JsonTypeInfo<GraphQLReply<TData>>)options.GetTypeInfo(typeof(GraphQLReply<TData>));
+                var info = GraphQLReplyContract.Create<TData>(options);
                 _current = (options, info);
 
                 return info;
@@ -124,7 +119,7 @@ internal static class GraphQLResponseReader
                     continue;
                 }
 
-                return JsonSerializer.Deserialize<GraphQLError[]>(ref reader, GraphQLJsonContextRegistry.Options);
+                return JsonSerializer.Deserialize(ref reader, GraphQLErrorContext.Default.GraphQLErrorArray);
             }
         }
         catch (JsonException)

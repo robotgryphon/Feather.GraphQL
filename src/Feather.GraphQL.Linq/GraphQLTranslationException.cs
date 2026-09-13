@@ -40,4 +40,19 @@ public sealed class GraphQLTranslationException : NotSupportedException
     internal static GraphQLTranslationException IgnoredMember(string clrName, Type declaringType)
         => new("FGQL005",
             $"'{declaringType.Name}.{clrName}' is marked [JsonIgnore] and is not a GraphQL field.");
+
+    /// <summary>
+    /// The one failure a chain has left: it was not replaced.
+    /// </summary>
+    /// <remarks>
+    /// Shared by the provider and by every chain operator, because they all mean the same thing.
+    /// A chain is read by the compiler and its calls are replaced; a body that runs is a call the
+    /// compiler could not see.
+    /// </remarks>
+    internal static GraphQLTranslationException NotCompiled()
+        => new("FGQL020",
+            "This chain was not compiled. A [GraphQLQuery] method is replaced at its call sites, "
+            + "so reaching its body means the call was not one the compiler could see — a method "
+            + "group, a delegate, or a reflective call. Call the method directly, or write the "
+            + "query yourself and send it with SendGraphQLQueryAsync.");
 }

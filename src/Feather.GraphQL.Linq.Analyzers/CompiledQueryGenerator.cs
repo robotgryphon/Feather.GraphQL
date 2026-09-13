@@ -15,12 +15,10 @@ namespace Feather.GraphQL.Linq.Analyzers;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="QueryInterceptorGenerator"/> precompiles what a chain <em>says</em> — its document,
-/// and as much of its plan as holds without values — and leaves the chain itself to be composed
-/// and walked, because the values it binds are only in the expression tree. This removes that
-/// last step, and the attribute is what makes it possible: a chain isolated to a method binds
-/// that method's parameters and nothing else, so the values are known at the call, one level up
-/// from where the tree would have been built.
+/// The attribute is what makes this possible. A chain isolated to a method binds that method's
+/// parameters and nothing else, so the values are known at the call — one level up from where an
+/// expression tree would have been built. Nothing is left to compose, and nothing has to be read
+/// back out of a tree at run time, because there is no tree.
 /// </para>
 /// <para>
 /// So the interception is of the method rather than of anything inside it. Intercepting the
@@ -104,7 +102,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
     private enum Reader { Root, Page, Count }
 
     /// <summary>The code that writes one variable's value into the payload.</summary>
-    private readonly record struct PayloadPart(string Name, string Body);
+    private readonly record struct PayloadPart(string Name, ImmutableArray<FilterStep> Steps);
 
     /// <summary>One call to an attributed method, and the attribute that replaces it.</summary>
     private sealed record CallSite(string Key, string Attribute);
@@ -249,7 +247,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
             return Declined(
                 "its terminal and its return type disagree — " + Expected(facts, shaped));
 
-        string? filter = null;
+        FilterSkeletonModel? filter = null;
         var holes = ImmutableArray<(string Type, string Binding)>.Empty;
 
         if (facts.HasFilter)
@@ -263,7 +261,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
             if (skeleton is null)
                 return Declined("its predicate is outside the shape the compiler prints");
 
-            filter = skeleton.Body;
+            filter = skeleton;
             holes = [.. skeleton.Holes.Select(hole => (hole.Type, hole.Binding!))];
         }
 
@@ -310,7 +308,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
             {
                 case BoundValue.Filter:
                     // Its holes were numbered first, which is also where the writer bound it.
-                    payload.Add(new PayloadPart(binding.Name, filter!));
+                    payload.Add(new PayloadPart(binding.Name, [.. filter!.Steps]));
                     continue;
 
                 case BoundValue.Order:
@@ -325,7 +323,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
                     // A page the terminal asked for: First means one, Single means two, and the
                     // compiler is the one that decided so.
                     payload.Add(new PayloadPart(binding.Name,
-                        PageSize(facts.ResultPage?.ToString() ?? "1")));
+                        PageConstant(facts.ResultPage?.ToString() ?? "1")));
                     continue;
 
                 case BoundValue.Take:
@@ -337,7 +335,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
                         || Value(argument, method, context.SemanticModel, token) is not { } size)
                         return Declined("its page size is not a parameter or a constant");
 
-                    payload.Add(new PayloadPart(binding.Name, PageSize("_" + bound.Count)));
+                    payload.Add(new PayloadPart(binding.Name, PageHole(bound.Count)));
                     bound.Add(("int", size));
                     continue;
                 }
@@ -725,12 +723,11 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
     /// <c>FilterTranslator.TranslateOrdering</c>: one object per key, nested along the member
     /// path, with the direction as its leaf.
     /// </remarks>
-    private static string? Sort(ChainFacts facts, SemanticModel model, CancellationToken token)
+    private static ImmutableArray<FilterStep>? Sort(
+        ChainFacts facts, SemanticModel model, CancellationToken token)
     {
-        var builder = new StringBuilder();
-        string indent = new(' ', 16);
-
-        builder.Append(indent).Append("writer.WriteStartArray();\n");
+        var json = new StringBuilder("[");
+        int written = 0;
 
         foreach (var (key, descending) in facts.Ordering)
         {
@@ -739,22 +736,25 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
                 || Path(body, lambda.Parameters[0], model, token) is not { } path)
                 return null;
 
+            if (written++ > 0)
+                json.Append(',');
+
             foreach (string segment in path)
             {
-                builder.Append(indent).Append("writer.WriteStartObject();\n")
-                    .Append(indent).Append("writer.WritePropertyName(\"").Append(segment).Append("\");\n");
+                json.Append("{\"");
+                BodyPlan.Json(json, segment);
+                json.Append("\":");
             }
 
-            builder.Append(indent).Append("writer.WriteStringValue(\"")
-                .Append(descending ? "DESC" : "ASC").Append("\");\n");
+            json.Append(descending ? "\"DESC\"" : "\"ASC\"");
 
-            for (int i = 0; i < path.Count; i++)
-                builder.Append(indent).Append("writer.WriteEndObject();\n");
+            json.Append('}', path.Count);
         }
 
-        builder.Append(indent).Append("writer.WriteEndArray();\n");
+        json.Append(']');
 
-        return builder.ToString();
+        // Every key and direction was decided by the compiler, so an ordering is a constant.
+        return [new FilterStep(json.ToString(), -1)];
     }
 
     /// <summary>The field path a member chain names, or null when it is not one.</summary>
@@ -800,8 +800,12 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
     }
 
     /// <summary>A page size, written as the number it is.</summary>
-    private static string PageSize(string value)
-        => new string(' ', 16) + "writer.WriteNumberValue(" + value + ");\n";
+    private static ImmutableArray<FilterStep> PageConstant(string number)
+        => [new FilterStep(number, -1)];
+
+    /// <summary>A page size the caller passes, which waits for the value at <paramref name="hole"/>.</summary>
+    private static ImmutableArray<FilterStep> PageHole(int hole)
+        => [new FilterStep("", hole)];
 
     /// <summary>
     /// The code a comparison's value is read from at the call, or null when there is none.
@@ -1116,9 +1120,6 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         ResponseStructWriter.Write(builder, query.Reply, query.Name, query.Shape);
         Parser(builder, query);
 
-        if (!query.Payload.IsEmpty)
-            Payload(builder, query, index);
-
         return builder.Append("}\n").ToString();
     }
 
@@ -1139,22 +1140,23 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
                 .Append(query.Parameters.Length > 0 ? ", " : "");
         }
 
+        var plan = Body(query);
+
         builder.Append(query.Parameters).Append(")\n")
             .Append("        {\n")
+            .Append("            // The envelope, the document and the shape of the variables are constants the\n")
+            .Append("            // compiler printed; only the values between them are written here.\n")
+            .Append("            using var body = global::Feather.GraphQL.Serialization.PooledBody.Rent(")
+            .Append(plan.ConstantLength).Append(");\n\n");
+
+        plan.Emit(builder, "            ", "body");
+
+        builder.Append('\n')
             .Append("            using var response = await global::Feather.GraphQL.Http.HttpExtensions")
-            .Append(".SendGraphQLQueryAsync(").Append(query.Client).Append(",\n")
-            .Append("                ").Append(Literal(query.Document)).Append(",\n")
-            .Append("                ");
-
-        if (query.Payload.IsEmpty)
-            builder.Append("global::Feather.GraphQL.GraphQLNoVariables.Instance");
-        else
-        {
-            builder.Append("new Variables").Append(index).Append('(')
-                .Append(string.Join(", ", query.Holes.Select(hole => hole.Binding))).Append(')');
-        }
-
-        builder.Append(",\n                ").Append(token).Append(").ConfigureAwait(false);\n\n")
+            .Append(".PostGraphQLBodyAsync(").Append(query.Client).Append(",\n")
+            .Append("                body.Written,\n")
+            .Append("                null,\n")
+            .Append("                ").Append(token).Append(").ConfigureAwait(false);\n\n")
             .Append("            ");
 
         // A count reads the connection's own field and never sees a row; everything else reads
@@ -1262,46 +1264,52 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// The variables one compiled query binds, written from the values the caller passed.
+    /// The request body this query posts, as constants and the values between them.
     /// </summary>
     /// <remarks>
-    /// One property per variable the document declared, in the document's own numbering — the
-    /// filter, the ordering, the page. The same payload <see cref="QueryInterceptorGenerator"/>
-    /// emits, minus the part that reads values out of the expression tree: here they arrive as
-    /// arguments, because the call the tree would have described is the call this replaces.
+    /// The document was printed at build time and so was the shape of everything around the
+    /// values — the envelope, the variable names, the filter's fields and operations, the
+    /// ordering. What is left for run time is the values themselves, which are the arguments the
+    /// intercepted call was given.
     /// </remarks>
-    private static void Payload(StringBuilder builder, Compiled query, int index)
+    private static BodyPlan Body(Compiled query)
     {
-        builder.Append("    /// <summary>The variables of Compiled").Append(index)
-            .Append(", written from its own arguments.</summary>\n")
-            .Append("    file sealed class Variables").Append(index)
-            .Append(" : global::Feather.GraphQL.IGraphQLVariables\n    {\n");
+        var plan = new BodyPlan();
 
-        for (int i = 0; i < query.Holes.Length; i++)
-            builder.Append("        private readonly ").Append(query.Holes[i].Type).Append(" _").Append(i).Append(";\n");
+        plan.Const("{");
+        plan.Property("query");
+        plan.Text(query.Document);
 
-        builder.Append("\n        public Variables").Append(index).Append('(')
-            .Append(string.Join(", ",
-                query.Holes.Select((hole, i) => hole.Type + " v" + i)))
-            .Append(")\n        {\n");
-
-        for (int i = 0; i < query.Holes.Length; i++)
-            builder.Append("            _").Append(i).Append(" = v").Append(i).Append(";\n");
-
-        builder.Append("        }\n\n")
-            .Append("        public bool IsEmpty => false;\n\n")
-            .Append("        public void WriteTo(global::System.Text.Json.Utf8JsonWriter writer)\n")
-            .Append("        {\n")
-            .Append("            writer.WriteStartObject();\n");
-
-        foreach (var part in query.Payload)
+        if (query.Payload.IsEmpty)
         {
-            builder.Append("            writer.WritePropertyName(\"").Append(part.Name).Append("\");\n")
-                .Append(part.Body);
+            plan.Const("}");
+
+            return plan;
         }
 
-        builder.Append("            writer.WriteEndObject();\n")
-            .Append("        }\n    }\n\n");
+        plan.Const(",");
+        plan.Property("variables");
+        plan.Const("{");
+
+        for (int i = 0; i < query.Payload.Length; i++)
+        {
+            var part = query.Payload[i];
+
+            plan.Separated(i);
+            plan.Property(part.Name);
+
+            foreach (var step in part.Steps)
+            {
+                if (step.Hole < 0)
+                    plan.Const(step.Json);
+                else
+                    plan.Value(query.Holes[step.Hole].Binding);
+            }
+        }
+
+        plan.Const("}}");
+
+        return plan;
     }
 
     private static string Literal(string value)

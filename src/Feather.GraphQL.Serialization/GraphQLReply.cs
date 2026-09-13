@@ -25,11 +25,16 @@ namespace Feather.GraphQL.Serialization;
 /// puts the reply on the large object heap.
 /// </para>
 /// </remarks>
+/// <remarks>
+/// The setters are settable rather than <c>init</c> because the contract for this type is built
+/// by hand — see <c>GraphQLReplyContract</c> — and a metadata setter is an ordinary delegate,
+/// which cannot reach an init-only property.
+/// </remarks>
 internal sealed class GraphQLReply<TData>
 {
     [JsonPropertyName("data")]
-    public TData? Data { get; init; }
+    public TData? Data { get; set; }
 
     [JsonPropertyName("errors")]
-    public GraphQLError[]? Errors { get; init; }
+    public GraphQLError[]? Errors { get; set; }
 }
