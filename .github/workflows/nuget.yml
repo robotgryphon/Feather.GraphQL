@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write  # enable GitHub OIDC token issuance for this job
 
 env:
   DOTNET_NOLOGO: true
@@ -16,27 +15,26 @@ env:
   MSBUILDSINGLELOADCONTEXT: 1
 
 jobs:
-  build:
-    name: Build and Test
+  version:
+    name: Version
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.semver.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # The version comes from the commit history, so the whole of it has to be here. A shallow
-          # clone gives a version that silently restarts from zero.
+          # The version comes from the commit history, so the whole of it has to be here. A
+          # shallow clone gives a version that silently restarts from zero.
           fetch-depth: 0
 
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "10.0.x"
-
       - name: Read the version out of the commit history
-        id: version
+        id: semver
         uses: paulhatch/semantic-version@v5.4.0
         with:
-          tag_prefix: "v"
+          # Matches the tags the release job writes. If these two disagree the action cannot see
+          # its own previous releases, and every build resolves to the same number.
+          tag_prefix: "releases/v"
           # The bump is asked for in the commit that makes the change, rather than inferred from
           # the shape of the diff — nothing else can tell a breaking change from a large one.
           major_pattern: "(MAJOR)"
@@ -45,16 +43,37 @@ jobs:
           search_commit_body: true
 
       - name: Fail if the version number has not been resolved
-        if: ${{ !steps.version.outputs.version }}
+        if: ${{ !steps.semver.outputs.version }}
         run: |
           echo "Error! Version number not resolved!"
           exit 1
+
+      - name: Print the version
+        run: echo "Building version ${{ steps.semver.outputs.version }}"
+
+  build:
+    name: Build, Test and Publish
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # enable GitHub OIDC token issuance for this job
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
 
       - name: Install dependencies
         run: dotnet restore
 
       - name: Build solution
-        run: dotnet build --no-restore -c Release -p:Version=${{ steps.version.outputs.version }}
+        run: dotnet build --no-restore -c Release -p:Version=$VERSION
 
       - name: Run tests
         # NUnitLite suites are executables rather than `dotnet test` targets, so each one is run.
@@ -79,13 +98,13 @@ jobs:
         # code without a trim warning or the claim in the readme is not true.
         run: |
           dotnet publish samples/Feather.GraphQL.AotSmoke -c Release -r linux-x64 \
-            -p:PublishAot=true -p:Version=${{ steps.version.outputs.version }} \
+            -p:PublishAot=true -p:Version=$VERSION \
             -warnaserror
 
           ./samples/Feather.GraphQL.AotSmoke/bin/Release/net10.0/linux-x64/publish/Feather.GraphQL.AotSmoke
 
       - name: Create NuGet packages
-        run: dotnet pack -c Release --no-restore --no-build -o nupkg -p:Version=${{ steps.version.outputs.version }}
+        run: dotnet pack -c Release --no-restore --no-build -o nupkg -p:Version=$VERSION
 
       - name: Upload nuget packages as artifacts
         uses: actions/upload-artifact@v4
@@ -97,24 +116,27 @@ jobs:
         uses: NuGet/login@v1
         id: login
         with:
-          user: ${{secrets.NUGET_USER}}
+          user: ${{ secrets.NUGET_USER }}
 
-      - id: publish
-        name: Publish NuGet packages to the NuGet registry
-        run: dotnet nuget push "nupkg/Feather.GraphQL.*.nupkg" --api-key ${{steps.login.outputs.NUGET_API_KEY}} --source https://api.nuget.org/v3/index.json
+      - name: Publish NuGet packages to the NuGet registry
+        run: dotnet nuget push "nupkg/Feather.GraphQL.*.nupkg" --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json
 
-      - id: create-tag
-        name: Create tag
-        needs: [ version, publish ]
-        runs-on: ubuntu-latest
-        steps:
-          - name: Create tag
-            uses: actions/github-script@v8
-            with:
-              script: |
-                github.rest.git.createRef({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  ref: 'refs/tags/releases/v${{ needs.version.outputs.version }}',
-                  sha: context.sha
-                })
+  tag:
+    name: Tag the release
+    # Only once the packages are published: a tag says a version exists, and the version the next
+    # build resolves is read back out of these tags.
+    needs: [ version, build ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # the only job that writes to the repository
+    steps:
+      - name: Create tag
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'refs/tags/releases/v${{ needs.version.outputs.version }}',
+              sha: context.sha
+            });
