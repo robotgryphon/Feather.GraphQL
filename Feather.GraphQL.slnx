@@ -7,6 +7,7 @@
     <Project Path="benchmarks/Feather.GraphQL.Benchmarks/Feather.GraphQL.Benchmarks.csproj" />
     <Project Path="benchmarks/Feather.GraphQL.Serialization.Benchmarks/Feather.GraphQL.Serialization.Benchmarks.csproj" />
     <Project Path="benchmarks/Feather.GraphQL.Benchmarks.Interpreted/Feather.GraphQL.Benchmarks.Interpreted.csproj" />
+    <Project Path="benchmarks/Feather.GraphQL.Benchmarks.Profiling/Feather.GraphQL.Benchmarks.Profiling.csproj" />
   </Folder>
   <Folder Name="/examples/">
     <Project Path="examples/Feather.GraphQL.Example/Feather.GraphQL.Example.csproj" />

@@ -70,8 +70,11 @@ public static class Payloads
     /// through an object.
     /// </summary>
     /// <remarks>
-    /// What <see cref="ClientComparison"/> measures over, so that every row there asks for the same
-    /// fields and is sent the same ones back. A payload holding more than the documents ask for
+    /// What <c>ClientComparison</c> measures over — and the profiling program too, which links this
+    /// file so a profile and a measurement are of the same bytes. Named in prose rather than by
+    /// cref for that reason: the type it refers to is not in every project this compiles in.
+    ///
+    /// Every row asks for the same fields and is sent the same ones back. A payload holding more than the documents ask for
     /// would be read by whichever client deserializes the whole object and skipped by whichever
     /// reads what its document named — which is a difference in what the rows were told to do, not
     /// in how well they do it.

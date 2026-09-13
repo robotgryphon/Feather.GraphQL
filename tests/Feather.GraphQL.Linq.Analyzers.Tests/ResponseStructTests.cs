@@ -156,7 +156,9 @@ public class ResponseStructTests
             Assert.That(source, Does.Contain("reader.GetBoolean()"));
 
             // A number's getter throws on a null, so the token is checked before it is called.
-            Assert.That(source, Does.Contain("reader.TokenType == global::System.Text.Json.JsonTokenType.Number"));
+            Assert.That(
+                source,
+                Does.Contain("reader.TokenType == global::System.Text.Json.JsonTokenType.Null ? default : reader.GetInt32()"));
         });
     }
 

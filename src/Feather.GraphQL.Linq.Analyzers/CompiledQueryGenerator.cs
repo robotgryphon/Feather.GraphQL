@@ -57,6 +57,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         string ResultType,
         string Result,
         Reader Read,
+        ReplyShape Shape,
         string Parameters,
         string Client,
         string? CancellationToken,
@@ -151,7 +152,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         var where = declaration.Identifier.GetLocation();
 
         Compiled Declined(string reason)
-            => new(key, method.Name, where, reason, "", "", "", Reader.Root, "", "", null, "", [], [],
+            => new(key, method.Name, where, reason, "", "", "", Reader.Root, ReplyShape.List, "", "", null, "", [], [],
                 null, "", "", "", "", null, false, null, null);
 
         if (method.IsGenericMethod || method.PartialImplementationPart is not null)
@@ -244,7 +245,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         if (facts.ExplicitTake && facts.Result != ResultKind.Sequence)
             return Declined("a Take and a result operator both ask for a page");
 
-        if (Reduction(facts, element, shaped, returned, out var resultType, out var reader) is not { } result)
+        if (Reduction(facts, element, shaped, returned, out var resultType, out var reader, out var shape) is not { } result)
             return Declined(
                 "its terminal and its return type disagree — " + Expected(facts, shaped));
 
@@ -366,7 +367,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         }
 
         return new Compiled(key, method.Name, where, null, returnType, resultType, result, reader,
-            string.Join(", ", parameters), client, cancellation, document, payload.ToImmutable(), holes,
+            shape, string.Join(", ", parameters), client, cancellation, document, payload.ToImmutable(), holes,
             shaping?.Body, shaping?.Parameter ?? "", shaped.ToDisplayString(_signature),
             element.ToDisplayString(_signature), Usings(declaration, method), reply, generated,
             method.IsStatic ? null : method.ContainingType.ToDisplayString(_signature), reach);
@@ -469,10 +470,22 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         ITypeSymbol shaped,
         ITypeSymbol returned,
         out string resultType,
-        out Reader reader)
+        out Reader reader,
+        out ReplyShape shape)
     {
         // A count asks the connection rather than the rows, so none are read.
         reader = facts.IsCount ? Reader.Count : facts.Paging == Paging.None ? Reader.Root : Reader.Page;
+
+        // The same decision, in the terms the reply's reader is written in: what the rows arrive
+        // wrapped in is what the document asked for them to be wrapped in.
+        shape = facts.IsCount
+            ? ReplyShape.Count
+            : facts.Paging switch
+            {
+                Paging.Cursor => ReplyShape.Cursor,
+                Paging.Offset => ReplyShape.Offset,
+                _ => ReplyShape.List
+            };
 
         // What the reply is read as is the queried type; what the method returns is what the
         // projection made of it, and the two are only the same when there was no projection.
@@ -1100,7 +1113,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
 
         builder.Append("    }\n\n");
 
-        ResponseStructWriter.Write(builder, query.Reply, query.Name);
+        ResponseStructWriter.Write(builder, query.Reply, query.Name, query.Shape);
         Parser(builder, query);
 
         if (!query.Payload.IsEmpty)

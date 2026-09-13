@@ -6,6 +6,33 @@ using Microsoft.CodeAnalysis;
 namespace Feather.GraphQL.Linq.Analyzers;
 
 /// <summary>
+/// What a query's root field answers with, and therefore which reader its reply needs.
+/// </summary>
+/// <remarks>
+/// The document and the reader are printed by the same compilation from the same chain, so this
+/// is not a guess about the reply — it is the same decision that chose what to select, carried to
+/// the code that reads what comes back. One shape is written and the others are not emitted at
+/// all, which is why a reader never asks a reply which of them it is.
+/// </remarks>
+public enum ReplyShape
+{
+    /// <summary>Un-paged: <c>{ data: { people: [ … ] } }</c>.</summary>
+    List,
+
+    /// <summary>Cursor-paged, as <c>[UsePaging]</c> answers: the rows are in <c>nodes</c>.</summary>
+    Cursor,
+
+    /// <summary>Offset-paged, as <c>[UseOffsetPaging]</c> answers: the rows are in <c>items</c>.</summary>
+    Offset,
+
+    /// <summary>A count: the connection's <c>totalCount</c>, and no rows selected at all.</summary>
+    Count,
+
+    /// <summary>One object rather than a list of them: <c>{ data: { person: { … } } }</c>.</summary>
+    Single
+}
+
+/// <summary>
 /// Writes a query's reply as C# types: one struct per object the payload carries, and the code
 /// that reads them.
 /// </summary>
@@ -403,16 +430,17 @@ internal static class ResponseStructWriter
     /// writes for it.
     /// </remarks>
     /// <remarks>
-    /// <c>single</c> is true when the root field answers with one object rather than a list of
-    /// them. Which it is cannot be told from the reply — a connection is an object too — but it
-    /// can be told from what the method returns, and that is settled before any reply exists.
+    /// <paramref name="shape"/> says what the root field answers with, which cannot be told from
+    /// the reply — a connection is an object, and so is a single row — but is known to the
+    /// compilation that printed the document, and is settled before any reply exists.
     /// </remarks>
-    public static void Write(StringBuilder builder, Model? model, string prefix, bool single = false)
+    public static void Write(
+        StringBuilder builder, Model? model, string prefix, ReplyShape shape = ReplyShape.List)
     {
         if (model is not null)
             Structs(builder, model);
 
-        Reply(builder, model, prefix, single);
+        Reply(builder, model, prefix, shape);
     }
 
     private static void Structs(StringBuilder builder, Model model)
@@ -642,66 +670,97 @@ internal static class ResponseStructWriter
     /// Writes the reply itself: the rows, and what the envelope said about them.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The envelope is written out here rather than called into, so a generated reader depends on
     /// nothing at run time. It is the same walk every reply needs — <c>data</c>, its single field,
-    /// the connection a paged field wraps its rows in — and it is short enough to read.
+    /// and then whatever <paramref name="shape"/> says that field answers with.
+    /// </para>
+    /// <para>
+    /// Only that one shape is written. The document was printed by the same compilation that
+    /// writes this reader, so whether the rows arrive bare, inside <c>nodes</c>, or inside
+    /// <c>items</c> is settled knowledge here — a reader that asked the reply which of them it was
+    /// would be re-deciding at run time what was already decided at build time, and paying a
+    /// comparison per property of the connection to arrive back at the known answer.
+    /// </para>
     /// </remarks>
-    private static void Reply(StringBuilder builder, Model? model, string prefix, bool single)
+    private static void Reply(StringBuilder builder, Model? model, string prefix, ReplyShape shape)
     {
         string name = prefix + "_Reply";
         string rowType = model?.Name ?? "";
 
-        if (single && model is not null)
+        if (shape == ReplyShape.Single && model is not null)
         {
             Single(builder, model, name, prefix);
 
             return;
         }
 
+        // A counting query selects `totalCount` and no rows; every other shape selects rows and no
+        // count. No document this generator prints asks for both, so no reply carries both.
+        bool counts = shape == ReplyShape.Count;
+
+        // What the rows are wrapped in, when they are wrapped at all.
+        string? wrapper = shape switch
+        {
+            ReplyShape.Cursor => "nodes",
+            ReplyShape.Offset => "items",
+            ReplyShape.Count => "totalCount",
+            _ => null
+        };
+
         builder.Append("    /// <summary>One reply to <c>").Append(prefix)
-            .Append("</c>: ").Append(model is null ? "what the envelope said." : "its rows, and what the envelope said.")
+            .Append("</c>: ").Append(counts ? "what the envelope said." : "its rows, and what the envelope said.")
             .Append("</summary>\n")
             .Append("    file readonly struct ").Append(name).Append('\n')
             .Append("    {\n");
 
-        if (model is not null)
+        if (!counts)
             builder.Append("        public readonly ").Append(rowType).Append("[] Rows;\n");
 
         builder.Append("        public readonly bool HasData;\n")
-            .Append("        public readonly bool HasErrors;\n")
-            .Append("        public readonly long? TotalCount;\n\n")
+            .Append("        public readonly bool HasErrors;\n");
+
+        if (counts)
+            builder.Append("        public readonly long? TotalCount;\n");
+
+        builder.Append('\n')
             .Append("        public ").Append(name).Append('(')
-            .Append(model is null ? "" : rowType + "[] rows, ")
-            .Append("bool hasData, bool hasErrors, long? totalCount)\n")
+            .Append(counts ? "" : rowType + "[] rows, ")
+            .Append("bool hasData, bool hasErrors")
+            .Append(counts ? ", long? totalCount)\n" : ")\n")
             .Append("        {\n");
 
-        if (model is not null)
+        if (!counts)
             builder.Append("            Rows = rows;\n");
 
         builder
             .Append("            HasData = hasData;\n")
-            .Append("            HasErrors = hasErrors;\n")
-            .Append("            TotalCount = totalCount;\n")
-            .Append("        }\n\n")
+            .Append("            HasErrors = hasErrors;\n");
+
+        if (counts)
+            builder.Append("            TotalCount = totalCount;\n");
+
+        builder.Append("        }\n\n")
             .Append("        /// <summary>Reads a whole reply, in one pass over its bytes.</summary>\n")
             .Append("        public static ").Append(name)
             .Append(" Read(global::System.ReadOnlySpan<byte> json)\n")
             .Append("        {\n")
             .Append("            var reader = new global::System.Text.Json.Utf8JsonReader(json);\n");
 
-        if (model is not null)
+        if (counts)
+            builder.Append("            long? totalCount = null;\n");
+        else
         {
-            builder.Append("            var rows = new global::System.Collections.Generic.List<")
+            builder.Append("            var rows = global::System.Array.Empty<")
                 .Append(rowType).Append(">();\n");
         }
 
         builder.Append("            bool hasData = false;\n")
-            .Append("            bool hasErrors = false;\n")
-            .Append("            long? totalCount = null;\n\n")
+            .Append("            bool hasErrors = false;\n\n")
             .Append("            if (!reader.Read() || reader.TokenType != ")
             .Append("global::System.Text.Json.JsonTokenType.StartObject)\n")
             .Append("                return new ").Append(name)
-            .Append(model is null ? "(false, false, null);\n\n" : "([], false, false, null);\n\n")
+            .Append(counts ? "(false, false, null);\n\n" : "([], false, false);\n\n")
             .Append("            while (reader.Read() && reader.TokenType == ")
             .Append("global::System.Text.Json.JsonTokenType.PropertyName)\n")
             .Append("            {\n")
@@ -731,64 +790,116 @@ internal static class ResponseStructWriter
             .Append("                if (!reader.Read() || reader.TokenType != ")
             .Append("global::System.Text.Json.JsonTokenType.PropertyName)\n")
             .Append("                    continue;\n\n")
-            .Append("                reader.Read();\n\n")
-            .Append("                // A field that pages wraps its rows in a connection; one that\n")
-            .Append("                // counts carries the count and no rows at all.\n")
-            .Append("                if (reader.TokenType == global::System.Text.Json.JsonTokenType.StartObject)\n")
-            .Append("                {\n")
-            .Append("                    while (reader.Read() && reader.TokenType == ")
-            .Append("global::System.Text.Json.JsonTokenType.PropertyName)\n")
-            .Append("                    {\n")
-            .Append("                        bool isRows = reader.ValueTextEquals(\"nodes\"u8)\n")
-            .Append("                            || reader.ValueTextEquals(\"items\"u8);\n")
-            .Append("                        bool isCount = !isRows && reader.ValueTextEquals(\"totalCount\"u8);\n\n")
-            .Append("                        reader.Read();\n\n")
-            .Append("                        if (isRows && reader.TokenType == ")
-            .Append("global::System.Text.Json.JsonTokenType.StartArray)\n")
-            .Append(model is null
-                ? "                            reader.Skip();\n"
-                : "                            ReadRows(ref reader, rows);\n")
-            .Append("                        else if (isCount && reader.TokenType == ")
-            .Append("global::System.Text.Json.JsonTokenType.Number)\n")
-            .Append("                            totalCount = reader.GetInt64();\n")
-            .Append("                        else\n")
-            .Append("                            reader.Skip();\n")
-            .Append("                    }\n\n")
-            .Append("                    continue;\n")
-            .Append("                }\n\n")
-            .Append("                if (reader.TokenType == global::System.Text.Json.JsonTokenType.StartArray)\n")
-            .Append(model is null
-                ? "                    reader.Skip();\n"
-                : "                    ReadRows(ref reader, rows);\n")
-            .Append("                else\n")
-            .Append("                    reader.Skip();\n")
-            .Append("            }\n\n")
+            .Append("                reader.Read();\n\n");
+
+        if (wrapper is null)
+        {
+            // Un-paged: the field is the array, and there is no connection to step into.
+            builder.Append("                if (reader.TokenType == ")
+                .Append("global::System.Text.Json.JsonTokenType.StartArray)\n")
+                .Append("                    rows = ReadRows(ref reader);\n")
+                .Append("                else\n")
+                .Append("                    reader.Skip();\n");
+        }
+        else
+        {
+            builder.Append("                // The connection the document asked for, whose <c>")
+                .Append(wrapper).Append("</c> is what it asked for inside it.\n")
+                .Append("                if (reader.TokenType != ")
+                .Append("global::System.Text.Json.JsonTokenType.StartObject)\n")
+                .Append("                {\n")
+                .Append("                    reader.Skip();\n")
+                .Append("                    continue;\n")
+                .Append("                }\n\n")
+                .Append("                while (reader.Read() && reader.TokenType == ")
+                .Append("global::System.Text.Json.JsonTokenType.PropertyName)\n")
+                .Append("                {\n")
+                .Append("                    bool wanted = reader.ValueTextEquals(\"")
+                .Append(wrapper).Append("\"u8);\n\n")
+                .Append("                    reader.Read();\n\n")
+                .Append("                    if (wanted && reader.TokenType == ")
+                .Append(counts
+                    ? "global::System.Text.Json.JsonTokenType.Number)\n"
+                    : "global::System.Text.Json.JsonTokenType.StartArray)\n")
+                .Append(counts
+                    ? "                        totalCount = reader.GetInt64();\n"
+                    : "                        rows = ReadRows(ref reader);\n")
+                .Append("                    else\n")
+                .Append("                        reader.Skip();\n")
+                .Append("                }\n");
+        }
+
+        builder.Append("            }\n\n")
             .Append("            return new ").Append(name)
-            .Append(model is null
+            .Append(counts
                 ? "(hasData, hasErrors, totalCount);\n"
-                : "(rows.ToArray(), hasData, hasErrors, totalCount);\n")
+                : "(rows, hasData, hasErrors);\n")
             .Append("        }\n\n");
 
-        if (model is null)
+        if (counts)
         {
             builder.Append("    }\n\n");
 
             return;
         }
 
-        builder.Append("        /// <summary>Reads the rows of an array the reader is standing on.</summary>\n")
-            .Append("        private static void ReadRows(\n")
-            .Append("            ref global::System.Text.Json.Utf8JsonReader reader,\n")
-            .Append("            global::System.Collections.Generic.List<").Append(model.Name).Append("> rows)\n")
+        string row = model!.Name;
+        string pool = "global::System.Buffers.ArrayPool<" + row + ">.Shared";
+
+        builder.Append("        /// <summary>\n")
+            .Append("        /// Reads the rows of an array the reader is standing on.\n")
+            .Append("        /// </summary>\n")
+            .Append("        /// <remarks>\n")
+            .Append("        /// How many there are is not known until the array ends, so they are gathered into a\n")
+            .Append("        /// buffer that doubles as it fills and copied once, at the end, into an array of the\n")
+            .Append("        /// size that turned out to be right. The buffer is rented and given back, so the only\n")
+            .Append("        /// thing left on the heap is the array handed to the caller.\n")
+            .Append("        /// </remarks>\n")
+            .Append("        private static ").Append(row)
+            .Append("[] ReadRows(ref global::System.Text.Json.Utf8JsonReader reader)\n")
             .Append("        {\n")
-            .Append("            while (reader.Read() && reader.TokenType != ")
-            .Append("global::System.Text.Json.JsonTokenType.EndArray)\n")
+            .Append("            // Empty to begin with, so the capacity check below is what rents the buffer —\n")
+            .Append("            // and a reply carrying no rows never reaches it, and rents nothing.\n")
+            .Append("            var buffer = global::System.Array.Empty<").Append(row).Append(">();\n")
+            .Append("            int at = 0;\n\n")
+            .Append("            try\n")
             .Append("            {\n")
-            .Append("                // A row a server could not resolve arrives as a null.\n")
-            .Append("                if (reader.TokenType == global::System.Text.Json.JsonTokenType.StartObject)\n")
-            .Append("                    rows.Add(").Append(model.Reader).Append(".Read(ref reader));\n")
-            .Append("                else\n")
-            .Append("                    reader.Skip();\n")
+            .Append("                while (reader.Read() && reader.TokenType != ")
+            .Append("global::System.Text.Json.JsonTokenType.EndArray)\n")
+            .Append("                {\n")
+            .Append("                    // A row a server could not resolve arrives as a null.\n")
+            .Append("                    if (reader.TokenType != ")
+            .Append("global::System.Text.Json.JsonTokenType.StartObject)\n")
+            .Append("                    {\n")
+            .Append("                        reader.Skip();\n")
+            .Append("                        continue;\n")
+            .Append("                    }\n\n")
+            .Append("                    if (at == buffer.Length)\n")
+            .Append("                    {\n")
+            .Append("                        var grown = ").Append(pool)
+            .Append(".Rent(at == 0 ? 16 : at * 2);\n\n")
+            .Append("                        if (at > 0)\n")
+            .Append("                        {\n")
+            .Append("                            global::System.Array.Copy(buffer, grown, at);\n")
+            .Append("                            ").Append(pool).Append(".Return(buffer, true);\n")
+            .Append("                        }\n\n")
+            .Append("                        buffer = grown;\n")
+            .Append("                    }\n\n")
+            .Append("                    buffer[at++] = ").Append(model.Reader).Append(".Read(ref reader);\n")
+            .Append("                }\n\n")
+            .Append("                if (at == 0)\n")
+            .Append("                    return [];\n\n")
+            .Append("                var rows = new ").Append(row).Append("[at];\n\n")
+            .Append("                global::System.Array.Copy(buffer, rows, at);\n\n")
+            .Append("                return rows;\n")
+            .Append("            }\n")
+            .Append("            finally\n")
+            .Append("            {\n")
+            .Append("                // Cleared on the way back: a row holds what it read, and an uncleared buffer\n")
+            .Append("                // would keep this reply's values reachable until something else rents it.\n")
+            .Append("                // The empty array a reply with no rows left behind is not the pool's to take.\n")
+            .Append("                if (buffer.Length > 0)\n")
+            .Append("                    ").Append(pool).Append(".Return(buffer, true);\n")
             .Append("            }\n")
             .Append("        }\n")
             .Append("    }\n\n");

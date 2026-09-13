@@ -489,7 +489,11 @@ public sealed class GraphQLQueryMethodGenerator : IIncrementalGenerator
                     : ResponseStructWriter.Rename(described, query.Method, prefix);
 
                 builder.Append("namespace Feather.GraphQL.Generated\n{\n");
-                ResponseStructWriter.Write(builder, reply, prefix, query.Single);
+                ResponseStructWriter.Write(
+                    builder,
+                    reply,
+                    prefix,
+                    query.Single ? ReplyShape.Single : ReplyShape.List);
                 Parser(builder, query, prefix, reply);
                 builder.Append("}\n\n");
             }

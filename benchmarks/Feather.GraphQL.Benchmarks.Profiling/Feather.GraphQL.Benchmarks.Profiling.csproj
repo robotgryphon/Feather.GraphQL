@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Feather.GraphQL.Benchmarks.Profiling</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <!-- A profiler reads what it is given: a Debug build would attribute time to code the
+         optimiser deletes in the one that ships. -->
+    <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
+    <Optimize Condition="'$(Configuration)' == 'Release'">true</Optimize>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <!-- dotTrace and dotMemory both read frames better when they are not inlined away, and the
+         numbers this prints are for orientation rather than for publishing. Turn it off to profile
+         what actually ships. -->
+    <TieredPGO>true</TieredPGO>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Bogus" />
+    <!-- The model declares contracts for these, and the payload builder serializes through it. -->
+    <PackageReference Include="GraphQL.Client" />
+    <PackageReference Include="GraphQL.Client.Serializer.SystemTextJson" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Feather.GraphQL.Linq.Providers.HttpClient\Feather.GraphQL.Linq.Providers.HttpClient.csproj" />
+    <!-- The analyzer, so the LINQ phase is the compiled pipeline rather than the composed one. -->
+    <ProjectReference Include="..\..\src\Feather.GraphQL.Linq.Analyzers\Feather.GraphQL.Linq.Analyzers.csproj"
+                      OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Shared with the benchmarks, so a profile and a measurement are of the same bytes. -->
+    <Compile Include="..\Feather.GraphQL.Benchmarks\Setup\CannedTransport.cs" Link="Setup\CannedTransport.cs" />
+    <Compile Include="..\Feather.GraphQL.Benchmarks\Setup\Model.cs" Link="Setup\Model.cs" />
+    <Compile Include="..\Feather.GraphQL.Benchmarks\Setup\Payloads.cs" Link="Setup\Payloads.cs" />
+  </ItemGroup>
+
+</Project>

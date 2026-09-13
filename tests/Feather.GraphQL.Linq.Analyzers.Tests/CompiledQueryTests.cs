@@ -226,7 +226,61 @@ public class CompiledQueryTests
             // this library's, so what proves it is the emitted code naming the members.
             Assert.That(run.Source, Does.Contain("ReadGraphQLReplyAsync"));
             Assert.That(run.Source, Does.Contain("\"nodes\"u8"));
+
+            // The document asked for nodes, so the reader reads nodes. The other wrapper is not a
+            // fallback this reply could need — the same compilation printed both — and a reader
+            // that looked for it would compare every property of the connection against a name
+            // this server was never asked to send.
+            Assert.That(run.Source, Does.Not.Contain("\"items\"u8"));
+            Assert.That(run.Source, Does.Not.Contain("\"totalCount\"u8"));
+        });
+    }
+
+    /// <summary>The other paging kind unwraps the other member, and only that one.</summary>
+    [Test]
+    public void An_offset_paged_field_is_read_through_its_own_wrapper()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country[]> Paged(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries", o => o.Paging = PagingKind.Offset)
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ countries { items { name code } } }"));
             Assert.That(run.Source, Does.Contain("\"items\"u8"));
+            Assert.That(run.Source, Does.Not.Contain("\"nodes\"u8"));
+            Assert.That(run.Source, Does.Not.Contain("\"totalCount\"u8"));
+        });
+    }
+
+    /// <summary>
+    /// An un-paged field has no wrapper at all, and its reader steps into none.
+    /// </summary>
+    /// <remarks>
+    /// The rows are the field's own value. A reader that checked for a connection first would pay
+    /// for the possibility on every reply of a query whose document can never produce one.
+    /// </remarks>
+    [Test]
+    public void An_unpaged_field_is_read_without_a_wrapper()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country[]> Plain(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries").ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ countries { name code } }"));
+            Assert.That(run.Source, Does.Not.Contain("\"nodes\"u8"));
+            Assert.That(run.Source, Does.Not.Contain("\"items\"u8"));
+
+            // Nothing selected a count, so the reply has no field to carry one.
+            Assert.That(run.Source, Does.Not.Contain("\"totalCount\"u8"));
+            Assert.That(run.Source, Does.Not.Contain("TotalCount"));
         });
     }
 
