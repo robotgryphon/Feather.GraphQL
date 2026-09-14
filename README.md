@@ -279,6 +279,15 @@ at all.
 rename or a computed value works. A nested object you pass through whole — `new Summary(c.Name,
 c.Continent)` — is built as your declared type, not a mirror of it.
 
+**A projection may end in your own code.** A nested `Select`, an extension method, anything that
+runs client-side: the compiler traces the fields the call is handed rather than refusing the
+query for a method it was never going to understand. `c.Continent.Countries.Select(n => n.Name)
+.Joined()` asks for `continent { countries { name } }` and copies the call into the shaping, where
+it runs over the rows that came back. A method handed the objects themselves gets their own
+scalars filled in, since which of them it reads is not visible. What it may not be handed is the
+row — `c.Describe()` on the element is `FGQL015`, because the row carries the element's fields
+without being its type.
+
 **A nested object with no scalar fields cannot be selected on its own** — `FGQL014`. Say what to
 take from it.
 

@@ -402,6 +402,102 @@ public class CompiledQueryShapeTests
         });
     }
 
+    // ---- a projection that ends in the caller's own code -------------------------------------
+
+    private const string Members =
+        """{"data":{"teams":[{"members":[{"name":"Ada","age":36},{"name":"Alan","age":41}]}]}}""";
+
+    /// <summary>
+    /// A nested Select: the field the compiler has to trace is two levels down.
+    /// </summary>
+    /// <remarks>
+    /// The inner chain runs client-side, over rows that have already arrived. What the compiler
+    /// takes from it is which field to ask for; what it does with the field is copied into the
+    /// shaping and runs there.
+    /// </remarks>
+    [GraphQLQuery]
+    private static Task<string[][]> MemberNamesAsync(HttpClient client, CancellationToken cancellationToken)
+        => client.CreateQueryable<Team>("teams")
+            .Select(t => t.Members.Select(m => m.Name).ToArray())
+            .ToArrayAsync(cancellationToken);
+
+    /// <summary>The same sequence, handed to a method of the caller's own.</summary>
+    [GraphQLQuery]
+    private static Task<string[]> RosterAsync(HttpClient client, CancellationToken cancellationToken)
+        => client.CreateQueryable<Team>("teams")
+            .Select(t => t.Members.Select(m => m.Name).Roster())
+            .ToArrayAsync(cancellationToken);
+
+    /// <summary>A method handed the members themselves, which may read any of them.</summary>
+    [GraphQLQuery]
+    private static Task<string[]> HeadcountAsync(HttpClient client, CancellationToken cancellationToken)
+        => client.CreateQueryable<Team>("teams")
+            .Select(t => t.Members.Headcount())
+            .ToArrayAsync(cancellationToken);
+
+    [Test]
+    public async Task A_nested_Select_asks_for_the_field_it_names()
+    {
+        var handler = new StubHandler(Members);
+
+        var names = await MemberNamesAsync(handler.Client(), CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(handler.SentBody, Is.EqualTo(
+                """{"query":"query { teams { members { name } } }"}"""));
+
+            Assert.That(names[0], Is.EqualTo(new[] { "Ada", "Alan" }));
+        });
+    }
+
+    /// <summary>
+    /// The case the compiler used to decline: a nested Select whose result the caller's own code
+    /// processes.
+    /// </summary>
+    /// <remarks>
+    /// Both halves are asserted because both were the complaint. The document names the one field
+    /// the projection reads, and the method runs over what came back — which is the post-data
+    /// shaping doing what the chain said, rather than the whole query being refused for a method
+    /// the compiler was never going to understand.
+    /// </remarks>
+    [Test]
+    public async Task A_method_of_the_callers_own_runs_over_what_came_back()
+    {
+        var handler = new StubHandler(Members);
+
+        var rosters = await RosterAsync(handler.Client(), CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(handler.SentBody, Is.EqualTo(
+                """{"query":"query { teams { members { name } } }"}"""));
+
+            Assert.That(rosters, Is.EqualTo(new[] { "Ada, Alan" }));
+        });
+    }
+
+    /// <summary>
+    /// A method given the objects gets all of their scalars, since which it reads is not visible.
+    /// </summary>
+    [Test]
+    public async Task A_method_handed_the_objects_gets_their_fields_filled_in()
+    {
+        var handler = new StubHandler(Members);
+
+        var lines = await HeadcountAsync(handler.Client(), CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(handler.SentBody, Is.EqualTo(
+                """{"query":"query { teams { members { name age } } }"}"""));
+
+            // Both fields arrived, which is the point: a method that reads more than the
+            // projection names would otherwise be handed rows with the rest left empty.
+            Assert.That(lines, Is.EqualTo(new[] { "Ada 36, Alan 41" }));
+        });
+    }
+
     // ---- a predicate written against the server's filter input -------------------------------
 
     /// <summary>
@@ -640,9 +736,33 @@ public class Renamed
 public sealed record Pair(string Name, int Age);
 
 /// <summary>An element with a nested object, so a projection has something to reach through.</summary>
+/// <remarks>
+/// And a nested sequence, so one has something to reach <em>into</em>: a Select inside the
+/// projection names a field two levels down, which is a field the compiler has to trace rather
+/// than a chain it has to understand.
+/// </remarks>
 public class Team
 {
     public required Person Lead { get; init; }
+
+    public Person[] Members { get; init; } = [];
+}
+
+/// <summary>
+/// The caller's own code, which a projection may end in.
+/// </summary>
+/// <remarks>
+/// Deliberately opaque to the compiler: what these do with what they are given is not derivable
+/// from anything it can see. What it can see is what they are given, and that is all it needs —
+/// the fields are named at the call, and the call itself runs where the shaping runs.
+/// </remarks>
+internal static class Rosters
+{
+    public static string Roster(this IEnumerable<string> names) => string.Join(", ", names);
+
+    /// <summary>Reads a field the projection never names, which is why all of them are asked for.</summary>
+    public static string Headcount(this IEnumerable<Person> members)
+        => string.Join(", ", members.Select(member => $"{member.Name} {member.Age}"));
 }
 
 /// <summary>

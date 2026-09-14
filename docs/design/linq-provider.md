@@ -515,12 +515,11 @@ Everything below builds on §4 and applies only to queryables rooted at
 
 A projection has two jobs. It names the fields to request, and — once the response
 arrives — it runs as an ordinary lambda over each materialized element. The second job
-is why a projection may compute; the first is why it may not compute over *anything*.
-The limit is not what the projection does, it is what the builder can read the required
-fields out of. `p.Name.ToUpperInvariant()` is `FGQL013` because nothing in it says
-whether `name` or something else is wanted.
+is why a projection may compute; the first is why what it computes *over* has to be
+readable. The limit is not what the projection does, it is what the builder can read the
+required fields out of.
 
-Three shapes are readable:
+Four shapes are readable:
 
 - **Member trees.** `p.Size!.Minimum` walks onto the selection tree directly.
 - **LINQ chains over a collection member.** `p.Parts.Primary.Select(x => new { x.Name })
@@ -531,6 +530,19 @@ Three shapes are readable:
 - **An object member named bare.** `p.Size` selects `size`'s scalar fields, because a
   GraphQL object field must carry a selection set and naming it without one can only
   mean "what is in it".
+- **A call the compiler knows nothing about.** `p.Parts.Primary.Select(x => x.Name)
+  .Joined()` — the method runs client-side over what it is handed, and what it is handed
+  is named where it is called. So its receiver and its arguments are read the way
+  anything else here is, and the call itself is where reading stops: what the method
+  makes of them is the shape of the answer and never the document. A method handed
+  objects rather than scalars gets their own scalars, because which of them it reads is
+  not visible and a field nobody requested arrives empty rather than missing.
+
+What such a call may not be handed is the row itself. `p.Describe()` — an extension over
+the queried type — is `FGQL015`: the projection runs over the payload's own row, which
+carries the element's fields without being its type, so a method wanting the element has
+nothing to bind against. Declined at the call rather than left to the generated file,
+where it would surface as the C# compiler's complaint about code nobody wrote.
 
 That last expansion is **one level, scalars only** — and nested fields inside the member
 are *skipped*, not refused. The same rule is the no-`Select` default: `T`'s own scalars.
@@ -568,7 +580,7 @@ arrives as a squiggle rather than on the first request.
 
 | LINQ | GraphQL | Notes |
 | --- | --- | --- |
-| `Select` | selection set | Member trees, LINQ chains over a collection member, and bare object members (§5.1) |
+| `Select` | selection set | Member trees, LINQ chains over a collection member, bare object members, and calls of the caller's own (§5.1) |
 | `Where` | `where:` filter input | Lowered per §4.3; must sit directly on a field |
 | `Where((TFilter f) => …)` | `where:` filter input | Predicate over a model of the input (§5.5) |
 | `Where(name, predicate)` | `name:` filter input | Names the filter argument inline (§5.5) |

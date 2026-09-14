@@ -160,8 +160,19 @@ internal static class SelectionSetWriter
             {
                 var nested = CollectSequence(invocation, parameter, target, model, token);
 
-                return nested is not null && Expand(TypeOf(invocation, model, token), nested);
+                // Expanded from what the chain reads rather than from what it produces: a chain
+                // that named no field at all still needs the member it ran over to carry a
+                // selection set, and the scalars of whatever it turned that member into would be
+                // fields of a type the node does not stand for.
+                return nested is not null
+                    && Expand(TypeOf(Origin(invocation), model, token), nested);
             }
+
+            // Any other call — a method of the caller's own, an extension over what a member
+            // holds — runs client-side too, over the values it is handed. Those are named here,
+            // so they are collected and the call itself is where the tracing stops.
+            case InvocationExpressionSyntax invocation:
+                return CollectCall(invocation, parameter, target, model, token, out _);
 
             case MemberAccessExpressionSyntax member:
             {
@@ -173,9 +184,46 @@ internal static class SelectionSetWriter
             case IdentifierNameSyntax identifier when identifier.Identifier.ValueText == parameter:
                 return CollectScalars(TypeOf(identifier, model, token)!, target);
 
+            // Anything else built out of what the element holds — a comparison, a concatenation,
+            // a conditional, an index — asks for the fields its parts name and for nothing
+            // besides, since what it does with them it does client-side.
             default:
+                return Parts(node, parameter, target, model, token);
+        }
+    }
+
+    /// <summary>
+    /// Collects what the parts of an expression read, for an expression that is nothing but its
+    /// parts.
+    /// </summary>
+    /// <remarks>
+    /// A part that never names the projection's parameter cannot read the element, so it asks for
+    /// nothing; one that does has to be an expression this understands outright. That is the same
+    /// bargain the cases above strike, applied to the operators between them rather than to a
+    /// list of the ones that were thought of.
+    /// </remarks>
+    private static bool Parts(
+        SyntaxNode node,
+        string? parameter,
+        Node target,
+        SemanticModel model,
+        CancellationToken token)
+    {
+        foreach (var child in node.ChildNodes())
+        {
+            if (!Mentions(child, parameter))
+                continue;
+
+            bool collected = child is ExpressionSyntax expression
+                ? Collect(expression, parameter, target, model, token)
+                // An argument list, an initializer: not an expression itself, but made of them.
+                : Parts(child, parameter, target, model, token);
+
+            if (!collected)
                 return false;
         }
+
+        return true;
     }
 
     /// <summary>
@@ -218,6 +266,11 @@ internal static class SelectionSetWriter
                 return nested;
             }
 
+            // A call this does not know is still something the operators in front of it read
+            // from, so what it was handed is what they run over.
+            case InvocationExpressionSyntax invocation:
+                return CollectCall(invocation, parameter, target, model, token, out var source) ? source : null;
+
             case MemberAccessExpressionSyntax member:
                 return Descend(member, parameter, target, model, token);
 
@@ -227,6 +280,155 @@ internal static class SelectionSetWriter
             default:
                 return null;
         }
+    }
+
+    /// <summary>
+    /// Collects what a call outside <c>System.Linq</c> reads, and stops there.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Whatever the method does, it does client-side and over the values it is handed — and those
+    /// are named where the call is written, as its receiver and its arguments. So each of them is
+    /// collected the way any other expression is, and what the method makes of them afterwards
+    /// changes the shape of the answer rather than the document. That is what lets a projection
+    /// end in a method of the caller's own: the fields are traceable even when the method is not.
+    /// </para>
+    /// <para>
+    /// What it is handed is selected whole, because this cannot see which of it the method reads
+    /// and a field left unrequested would arrive empty rather than missing. Whole means that
+    /// member's own scalars, the same answer naming a member without projecting gets — and only
+    /// when the chain in front of the call did not change what the sequence holds, since one that
+    /// did has already said what it wants and anything more would be fields of a type the
+    /// selection does not stand for.
+    /// </para>
+    /// <para>
+    /// <paramref name="source"/> is the node the receiver landed on, so an operator further out
+    /// can go on collecting into it. It is null when the call reads nothing through a receiver —
+    /// a static method, or an extension called as one — which is not a refusal.
+    /// </para>
+    /// </remarks>
+    private static bool CollectCall(
+        InvocationExpressionSyntax invocation,
+        string? parameter,
+        Node target,
+        SemanticModel model,
+        CancellationToken token,
+        out Node? source)
+    {
+        source = null;
+
+        var receiver = invocation.Expression is MemberAccessExpressionSyntax access
+            ? access.Expression
+            : null;
+
+        // Called some other way than through a receiver or by name — through a delegate the
+        // element holds, say — which is a call this cannot follow.
+        if (receiver is null && Mentions(invocation.Expression, parameter))
+            return false;
+
+        if (receiver is not null && Mentions(receiver, parameter))
+        {
+            source = CollectSequence(receiver, parameter, target, model, token);
+
+            if (source is null)
+                return false;
+
+            var origin = TypeOf(Origin(receiver), model, token);
+            var handed = TypeOf(receiver, model, token);
+
+            if (origin is not null
+                && handed is not null
+                && !GraphQLTypeFacts.IsLeaf(origin)
+                && SymbolEqualityComparer.Default.Equals(
+                    GraphQLTypeFacts.Unwrap(origin), GraphQLTypeFacts.Unwrap(handed)))
+            {
+                CollectScalars(GraphQLTypeFacts.Unwrap(origin), source);
+            }
+
+            if (!Expand(origin, source))
+                return false;
+        }
+
+        foreach (var argument in invocation.ArgumentList.Arguments)
+        {
+            if (!CollectArgument(argument.Expression, receiver, parameter, target, source, model, token))
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// What one argument of such a call reads.
+    /// </summary>
+    /// <remarks>
+    /// An expression that never names the projection's parameter cannot read the element and is
+    /// skipped; one that does is collected where it is rooted. A lambda is the exception, because
+    /// it names the parameter of its own: it ranges over what the receiver holds, exactly as one
+    /// given to a LINQ operator does, and is collected onto the receiver's node — but only when
+    /// its parameter is that element, since a lambda over anything else names members this could
+    /// not place.
+    /// </remarks>
+    private static bool CollectArgument(
+        ExpressionSyntax argument,
+        ExpressionSyntax? receiver,
+        string? parameter,
+        Node target,
+        Node? source,
+        SemanticModel model,
+        CancellationToken token)
+    {
+        if (argument is not LambdaExpressionSyntax lambda)
+        {
+            return !Mentions(argument, parameter)
+                || Collect(argument, parameter, target, model, token);
+        }
+
+        var handed = receiver is null ? null : TypeOf(receiver, model, token);
+        var over = handed is null ? null : GraphQLTypeFacts.Unwrap(handed);
+
+        // Nothing under it to select — a sequence of scalars, or a call that reads nothing
+        // through a receiver at all — so the lambda names no field of the graph, unless it
+        // reaches back out to the element, which is a read this could not place.
+        if (source is null || over is null || GraphQLTypeFacts.IsScalar(over))
+            return !Mentions(lambda, parameter);
+
+        return model.GetSymbolInfo(lambda, token).Symbol is IMethodSymbol { Parameters.Length: 1 } written
+            && SymbolEqualityComparer.Default.Equals(written.Parameters[0].Type, over)
+            && Collect(lambda.Body, Parameter(lambda), source, model, token);
+    }
+
+    /// <summary>The expression a client-side chain reads from, which its operators run over.</summary>
+    private static ExpressionSyntax Origin(ExpressionSyntax expression)
+        => expression switch
+        {
+            ParenthesizedExpressionSyntax parenthesized => Origin(parenthesized.Expression),
+            CastExpressionSyntax cast => Origin(cast.Expression),
+            InvocationExpressionSyntax { Expression: MemberAccessExpressionSyntax access }
+                => Origin(access.Expression),
+            _ => expression
+        };
+
+    /// <summary>
+    /// Whether an expression names the projection's parameter anywhere inside it.
+    /// </summary>
+    /// <remarks>
+    /// By name, as everything else here matches it, and deliberately in the direction that costs
+    /// a decline rather than a wrong document: a projection whose parameter cannot be named at
+    /// all is treated as named everywhere, so every expression has to be understood outright.
+    /// </remarks>
+    private static bool Mentions(SyntaxNode node, string? parameter)
+    {
+        if (parameter is null)
+            return true;
+
+        foreach (var name in node.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
+        {
+            if (name.Identifier.ValueText == parameter)
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>

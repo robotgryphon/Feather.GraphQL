@@ -64,7 +64,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         ImmutableArray<(string Type, string Binding)> Holes,
         string? Shaper,
         string ShaperParameter,
-        string ShapedType,
+        string ShapedRows,
         string ElementType,
         string Usings,
         ResponseStructWriter.Model? Reply,
@@ -228,8 +228,9 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         {
             if (Shaper(facts.Projection!, method, context.SemanticModel, token) is not { } written)
                 return Declined(
-                    "its Select reads something the replacement cannot — a local it captured, or a "
-                    + "member private to the declaring type");
+                    "its Select reads something the replacement cannot — a local it captured, a "
+                    + "member private to the declaring type, or the row itself where the queried "
+                    + "type is wanted");
 
             shaping = written;
             shaped = written.Type;
@@ -373,7 +374,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
 
         return new Compiled(key, method.Name, where, null, returnType, resultType, result, reader,
             shape, string.Join(", ", parameters), client, cancellation, document, payload.ToImmutable(), holes,
-            shaping?.Body, shaping?.Parameter ?? "", shaped.ToDisplayString(_signature),
+            shaping?.Body, shaping?.Parameter ?? "", Allocation(shaped, "source.Length"),
             element.ToDisplayString(_signature), Usings(declaration, method), reply, generated,
             method.IsStatic ? null : method.ContainingType.ToDisplayString(_signature), reach);
     }
@@ -651,6 +652,20 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
                 available.Add(nested);
         }
 
+        // What the projection runs over is the payload's own row rather than the queried type: a
+        // struct carrying the fields the document asked for, under the names the element gives
+        // them. So a path through the parameter reads the same thing there as here — and the
+        // parameter itself does not, because it is not that type. Handing it to something
+        // expecting the element would be a generated file that does not compile, which is a worse
+        // answer than declining.
+        foreach (var node in body.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
+        {
+            if (SymbolEqualityComparer.Default.Equals(
+                    model.GetSymbolInfo(node, token).Symbol, lambda.Parameters[0])
+                && !ReadsAField(node, model, token))
+                return null;
+        }
+
         foreach (var node in body.DescendantNodesAndSelf())
         {
             if (model.GetSymbolInfo(node, token).Symbol is not { } symbol)
@@ -658,6 +673,13 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
 
             switch (symbol)
             {
+                // A lambda written inside the projection — the one a nested Select takes — is
+                // part of the projection and is copied with it. Its symbol is a method of
+                // nobody's, which no accessibility question has an answer for, so it is settled
+                // here rather than by the check below saying no to it.
+                case IMethodSymbol { MethodKind: MethodKind.AnonymousFunction }:
+                    continue;
+
                 // A value from the enclosing scope, which the call site does not have.
                 case ILocalSymbol:
                 case IRangeVariableSymbol:
@@ -679,6 +701,51 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         return qualifier.Declined || written is null
             ? null
             : new Shaping(produced, lambda.Parameters[0].Name, written.ToFullString().Trim());
+    }
+
+    /// <summary>
+    /// How an array of the shaped type is allocated.
+    /// </summary>
+    /// <remarks>
+    /// C# spells an array's outer rank first, so an array of <c>string[]</c> is written
+    /// <c>new string[n][]</c>: the size goes in the brackets the type's own spelling starts with
+    /// rather than after them. Written from the symbol because the spelling cannot be reached by
+    /// appending to a display string — a projection that ends in <c>ToArray()</c> is exactly the
+    /// case where it would not compile.
+    /// </remarks>
+    private static string Allocation(ITypeSymbol shaped, string size)
+    {
+        var ranks = new StringBuilder();
+        var element = shaped;
+
+        while (element is IArrayTypeSymbol array)
+        {
+            ranks.Append('[').Append(',', array.Rank - 1).Append(']');
+            element = array.ElementType;
+        }
+
+        return element.ToDisplayString(_signature) + "[" + size + "]" + ranks;
+    }
+
+    /// <summary>
+    /// Whether one mention of the projection's parameter only reads a field off it.
+    /// </summary>
+    /// <remarks>
+    /// A property is a member the row mirrors and so means the same thing on either type.
+    /// Anything else — a method called on it, the parameter passed as an argument, the parameter
+    /// returned as it is — wants the element itself, which the row is not.
+    /// </remarks>
+    private static bool ReadsAField(ExpressionSyntax mention, SemanticModel model, CancellationToken token)
+    {
+        var current = mention;
+
+        while (current.Parent is ParenthesizedExpressionSyntax
+               or PostfixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.SuppressNullableWarningExpression })
+            current = (ExpressionSyntax)current.Parent;
+
+        return current.Parent is MemberAccessExpressionSyntax access
+            && access.Expression == current
+            && model.GetSymbolInfo(access, token).Symbol is IPropertySymbol;
     }
 
     /// <summary>
@@ -1263,7 +1330,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         if (query.Shaper is not { } projection)
             return;
 
-        builder.Append("            var rows = new ").Append(query.ShapedType).Append("[source.Length];\n")
+        builder.Append("            var rows = new ").Append(query.ShapedRows).Append(";\n")
             .Append("\n")
             .Append("            for (int i = 0; i < source.Length; i++)\n")
             .Append("            {\n")

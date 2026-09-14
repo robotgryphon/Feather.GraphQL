@@ -350,6 +350,178 @@ public class CompiledQueryTests
     }
 
     /// <summary>
+    /// A projection whose own Select reaches into a nested sequence.
+    /// </summary>
+    /// <remarks>
+    /// Nothing about the inner chain is the compiler's business: it runs client-side, over rows
+    /// that have already arrived, and what it decides is the shape of the answer. What the
+    /// compiler has to get right is the field it names, two levels down — and that the lambda
+    /// comes out the other side as the one that was written.
+    /// </remarks>
+    [Test]
+    public void A_nested_Select_is_compiled()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<string[][]> Nested(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => c.Continent.Countries.Select(n => n.Name).ToArray())
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ countries { continent { countries { name } } } }"));
+            Assert.That(run.Source, Does.Contain("c.Continent.Countries.Select(n => n.Name).ToArray()"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A method of the caller's own, which is where the tracing stops rather than where it gives
+    /// up.
+    /// </summary>
+    /// <remarks>
+    /// What the method does is not knowable here and does not have to be: it runs client-side
+    /// over the values the projection hands it, and those are named at the call. So the fields
+    /// are traced through it and the call itself is copied into the shaping, where it runs over
+    /// the rows exactly as it would have.
+    /// </remarks>
+    [Test]
+    public void A_method_of_the_callers_own_is_where_the_tracing_stops()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<string[]> Listing(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => c.Continent.Countries.Select(n => n.Name).Joined())
+                    .ToArrayAsync(token);
+
+            internal static string Joined(this System.Collections.Generic.IEnumerable<string> values)
+                => string.Join(", ", values);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            // The inner Select said which field, so that is the only one asked for.
+            Assert.That(run.Source, Does.Contain("{ countries { continent { countries { name } } } }"));
+            Assert.That(run.Source,
+                Does.Contain("c.Continent.Countries.Select(n => n.Name).Joined()"));
+
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A method handed the objects themselves, which may read any of them.
+    /// </summary>
+    /// <remarks>
+    /// Which of the fields it reads is not visible, so all of them are asked for — the same
+    /// answer naming a member without projecting gives. The alternative is a row whose other
+    /// fields are silently empty, which the method has no way to tell from data.
+    /// </remarks>
+    [Test]
+    public void A_method_handed_a_member_gets_that_members_own_fields()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<int[]> Counting(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => c.Continent.Countries.Weigh())
+                    .ToArrayAsync(token);
+
+            internal static int Weigh(this System.Collections.Generic.IEnumerable<Country> countries)
+                => countries.Count();
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source,
+                Does.Contain("{ countries { continent { countries { name code } } } }"));
+
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// An inner chain that names no field of its own still leaves the member it ran over needing
+    /// a selection set.
+    /// </summary>
+    /// <remarks>
+    /// Which is asked of that member rather than of what the chain turned it into. The two are
+    /// the same type whenever the chain only filters or orders, and different the moment it
+    /// projects — at which point the fields of the projected type are fields no country has, and
+    /// a document naming them is one the server rejects.
+    /// </remarks>
+    [Test]
+    public void A_nested_chain_naming_no_field_expands_the_member_it_read()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Renamed[][]> Blank(HttpClient client, string title, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => c.Continent.Countries.Select(n => new Renamed { Title = title }).ToArray())
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ countries { continent { countries { name code } } } }"));
+
+            // An array of arrays, whose size goes in the brackets the type's spelling starts with.
+            Assert.That(run.Source, Does.Contain("new global::Renamed[source.Length][]"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>A predicate inside the projection names fields too, and they are traced.</summary>
+    [Test]
+    public void A_predicate_inside_the_projection_is_traced()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<string[][]> Filtered(HttpClient client, string code, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => c.Continent.Countries
+                        .Where(n => n.Code == code)
+                        .Select(n => n.Name)
+                        .ToArray())
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source,
+                Does.Contain("{ countries { continent { countries { code name } } } }"));
+
+            // The value the predicate compares against is the method's own parameter, which the
+            // replacement has in scope: the filter runs client-side, so nothing is bound for it.
+            Assert.That(run.Source, Does.Contain("n.Code == code"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// The row a projection runs over is the payload's, not the queried type.
+    /// </summary>
+    /// <remarks>
+    /// Its fields are the element's and are read through as such, but it is not that type, so
+    /// handing it to something that wants the element cannot work. Declined here rather than left
+    /// to the generated file, where it would be the compiler's error about generated code.
+    /// </remarks>
+    [Test]
+    public void A_projection_passing_the_row_itself_declines()
+        => Declines("""
+            [GraphQLQuery]
+            private static Task<string[]> Describing(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => c.Describe())
+                    .ToArrayAsync(token);
+
+            internal static string Describe(this Country country) => country.Name;
+            """);
+
+    /// <summary>
     /// A type the projection names is written out in full, since the generated file does not
     /// share the scope the projection was written in.
     /// </summary>
