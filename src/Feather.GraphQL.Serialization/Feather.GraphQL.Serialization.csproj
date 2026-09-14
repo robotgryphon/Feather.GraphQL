@@ -9,7 +9,10 @@
     <Description>Reading GraphQL replies: bytes, JSON and streams, for every transport.</Description>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="JetBrains.Annotations" />
+    <!-- [PublicAPI] and [UsedImplicitly] are hints for an IDE and nothing else reads them,
+         so the reference is compile-time only: PrivateAssets keeps the assembly out of
+         every consumer's dependency graph and out of what they publish. -->
+    <PackageReference Include="JetBrains.Annotations" PrivateAssets="all" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" PrivateAssets="All" />
   </ItemGroup>
   <ItemGroup>

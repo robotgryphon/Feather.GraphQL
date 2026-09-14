@@ -287,11 +287,21 @@ multi-targeting outer build.
 | `Feather.GraphQL.Abstractions`              | The declaring attribute, `PagingKind`, and the abstract `GraphQLException`                            | —                           |
 | `Feather.GraphQL.Serialization`             | A reply's shape and how to read it: the error model, the readers, `PooledBody`, the contract registry | Abstractions                |
 | `Feather.GraphQL.Http`                      | `HttpClient` extensions for sending a document and reading a reply                                    | Abstractions, Serialization |
-| `Feather.GraphQL.Linq`                      | The chain surface the compiler reads. No translator, no executor                                      | Abstractions, Serialization |
+| `Feather.GraphQL.Linq`                      | The chain surface the compiler reads, and the analyzer that reads it. No translator, no executor      | Abstractions, Serialization, Http |
 | `Feather.GraphQL.Linq.Providers.HttpClient` | `CreateQueryable` over `HttpClient`, plus DI                                                          | Linq, Http                  |
-| `Feather.GraphQL.Linq.Analyzers`            | The analyzer and generators. Never loaded at run time                                                 | —                           |
 
-**Linq and Http do not reference each other.** Generated code depends on `Serialization` and
+Install `Feather.GraphQL.Linq.Providers.HttpClient` and everything above it comes with it. There is
+nothing to configure: the analyzer and the interceptor opt-in a compiled chain needs both ride in
+the `Feather.GraphQL.Linq` package, the first under `analyzers/`, the second under
+`buildTransitive/`.
+
+**The analyzer is not a package and never ships.** It is built from
+`src/Feather.GraphQL.Linq.Analyzers`, packed into `Feather.GraphQL.Linq` under
+`analyzers/dotnet/cs`, loaded by the compiler and by nothing else.
+
+`Feather.GraphQL.Linq` depends on `Http` for the generated half only — a compiled query posts and
+reads through it, so whoever ships the generator has to declare it. Nothing in the assembly itself
+calls `Http`, and `Http` takes no reference back. Generated code depends on `Serialization` and
 `Http`; it depends on `Feather.GraphQL.Linq` for nothing at all at run time.
 
 ## NativeAOT
@@ -302,6 +312,20 @@ binary with zero trim or AOT warnings and exercises all three surfaces:
 ```bash
 dotnet publish samples/Feather.GraphQL.AotSmoke -c Release -r osx-arm64 /p:PublishAot=true
 ```
+
+That one runs against the projects in `src/`, which is not the same as running against the
+packages. `samples/Feather.GraphQL.PackageSmoke` publishes the same program with one
+`PackageReference` and no properties of its own, against packages `dotnet pack` has just written:
+
+```bash
+dotnet pack -c Release -o nupkg -p:Version=0.0.1-local
+dotnet publish samples/Feather.GraphQL.PackageSmoke -c Release -r osx-arm64 \
+  /p:PublishAot=true /p:FeatherVersion=0.0.1-local
+```
+
+It is deliberately outside the solution and stops the repository's `Directory.Build.props` at its
+own folder, because what that file hands every project here is exactly what a consumer has to get
+from the package instead.
 
 ## Benchmarks
 

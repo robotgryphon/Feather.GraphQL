@@ -1,0 +1,9 @@
+<Project>
+
+  <PropertyGroup>
+    <!-- Central versions are the repository's, and a consumer has none. The one PackageReference
+         here carries its own version, passed in by whoever built the packages. -->
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+</Project>

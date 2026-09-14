@@ -11,7 +11,10 @@
     <RootNamespace>Feather.GraphQL.Linq.Providers</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="JetBrains.Annotations" />
+    <!-- [PublicAPI] and [UsedImplicitly] are hints for an IDE and nothing else reads them,
+         so the reference is compile-time only: PrivateAssets keeps the assembly out of
+         every consumer's dependency graph and out of what they publish. -->
+    <PackageReference Include="JetBrains.Annotations" PrivateAssets="all" />
     <!-- For the IOptions<T> overloads only; the delegate and instance forms need nothing. -->
     <PackageReference Include="Microsoft.Extensions.Options" />
   </ItemGroup>

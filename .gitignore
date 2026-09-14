@@ -5,6 +5,7 @@ bin/
 obj/
 *.user
 nuget/
+nupkg/
 .DS_Store
 TestResult.xml
 BenchmarkDotNet.Artifacts/
