@@ -560,6 +560,34 @@ public class CompiledQueryTests
                     .ToArrayAsync(token);
             """);
 
+    /// <summary>
+    /// A helper the generated file can see is written with the type that declares it.
+    /// </summary>
+    /// <remarks>
+    /// The same reason every type name is written out: the replacement lives in a file of its
+    /// own, where a name that resolved because the declaring type was around it resolves as
+    /// nothing at all.
+    /// </remarks>
+    [Test]
+    public void A_helper_named_on_its_own_is_written_with_its_type()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Renamed[]> Shouting(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => new Renamed { Title = Shout(c.Name) })
+                    .ToArrayAsync(token);
+
+            internal static string Shout(string value) => value.ToUpperInvariant();
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("Title = global::Snippet.Shout(c.Name)"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
     /// <summary>A private helper is not reachable from the file the replacement lives in.</summary>
     [Test]
     public void A_projection_calling_a_private_helper_declines()
@@ -672,6 +700,126 @@ public class CompiledQueryTests
                 Console.WriteLine("about to query");
                 return client.CreateQueryable<Country>("countries").ToArrayAsync(token);
             }
+            """);
+
+    /// <summary>
+    /// A body that awaits the chain and goes on to do something with the rows.
+    /// </summary>
+    /// <remarks>
+    /// The other half of a projection ending in the caller's own code, one level out: what is
+    /// written around the await runs client-side over the answer, so the replacement runs it in
+    /// the same place — over the rows it awaited for, rather than not at all.
+    /// </remarks>
+    [Test]
+    public void A_body_that_goes_on_after_the_await_is_compiled()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static async Task<string> Listed(HttpClient client, CancellationToken token)
+                => (await client.CreateQueryable<Country>("countries")
+                    .Select(c => c.Name)
+                    .ToArrayAsync(token)).Joined();
+
+            internal static string Joined(this System.Collections.Generic.IEnumerable<string> values)
+                => string.Join(", ", values);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            // The chain is still the whole of the document: what follows the await asks the
+            // server for nothing.
+            Assert.That(run.Source, Does.Contain("{ countries { name } }"));
+            Assert.That(run.Source, Does.Contain("return (rows).Joined();"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>The rows as an argument, which is the same substitution somewhere else.</summary>
+    [Test]
+    public void A_body_that_awaits_the_chain_into_an_argument_is_compiled()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static async Task<string> Joined(HttpClient client, CancellationToken token)
+                => string.Join(", ", await client.CreateQueryable<Country>("countries")
+                    .Select(c => c.Name)
+                    .ToArrayAsync(token));
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ countries { name } }"));
+            Assert.That(run.Source, Does.Contain("return string.Join(\", \", rows);"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// What the terminal reduces to is what the body awaited, and what it wrote around it runs
+    /// over that.
+    /// </summary>
+    /// <remarks>
+    /// Over it and not before it: the document is the chain's, so a body reading a field the
+    /// chain never asked for reads it off the row as the row arrived. Which is what the same two
+    /// lines mean anywhere else — the rows are the queried type with its own scalars filled in,
+    /// and nothing deeper.
+    /// </remarks>
+    [Test]
+    public void A_body_that_reaches_through_a_result_operator_is_compiled()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static async Task<string> Coded(HttpClient client, string name, CancellationToken token)
+                => (await client.CreateQueryable<Country>("countries")
+                    .Where(c => c.Name == name)
+                    .FirstAsync(token)).Code;
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain(
+                "{ countries(where: { name: { eq: $v0 } }, take: $v1) { name code } }"));
+
+            // The reduction the terminal asked for, substituted where the await was.
+            Assert.That(run.Source, Does.Contain("rows[0]"));
+            Assert.That(run.Source, Does.Contain(").Code;"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A body that does something around the chain without awaiting it.
+    /// </summary>
+    /// <remarks>
+    /// The rule the one-expression body only looked like it enforced: what the chain stands for
+    /// ends at the call this recognised, and a wrapper around that is code the replacement would
+    /// drop. Reproducing it is only possible for what the body awaited — everything else is
+    /// something happening to the query rather than to its answer.
+    /// </remarks>
+    [Test]
+    public void A_body_that_wraps_the_chain_without_awaiting_it_declines()
+        => Declines("""
+            [GraphQLQuery]
+            private static Task<Country[]> Wrapped(HttpClient client, CancellationToken token)
+                => Task.FromResult(client.CreateQueryable<Country>("countries")
+                    .Select(c => new Country { Name = c.Name })
+                    .ToArrayAsync(token).Result);
+            """);
+
+    /// <summary>
+    /// What the body does after the await is copied, so it is read by the same rules the
+    /// projection is.
+    /// </summary>
+    [Test]
+    public void A_body_reading_the_declaring_types_state_after_the_await_declines()
+        => Declines("""
+            private static readonly string _suffix = "!";
+
+            [GraphQLQuery]
+            private static async Task<string> Suffixed(HttpClient client, CancellationToken token)
+                => (await client.CreateQueryable<Country>("countries")
+                    .Select(c => c.Name)
+                    .ToArrayAsync(token)).Length + _suffix;
             """);
 
     /// <summary>The client has to be the caller's, because the caller is where this runs.</summary>

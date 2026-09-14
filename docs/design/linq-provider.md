@@ -432,6 +432,27 @@ every operator must be one it knows, and — the load-bearing rule — the chain
 document printed without that `First()` is a *wrong* document, not a missing one. So
 finishing means a result operator, a materializing call, or a `foreach`.
 
+**Where it ends is also what bounds the body.** A `[GraphQLQuery]` method's body is one
+expression, and for a long time that was taken to mean the body *is* the chain — which it
+only looks like. `Task.FromResult(chain.ToArrayAsync(t).Result)` is one expression too, and
+compiling it as though it were the chain would drop the wrapper: the call being replaced is
+the call that would have run it. So the reader reports the expression it stopped at, and
+the body has to be that expression, or one `await` of it. The second case is reproduced
+rather than refused — what a body writes around the await runs client-side over the rows,
+which is exactly where the replacement can run it too:
+
+```csharp
+[GraphQLQuery]
+private static async Task<string> RosterAsync(HttpClient client, CancellationToken token)
+    => (await client.CreateQueryable<Person>("people")
+        .Select(p => p.Name)
+        .ToArrayAsync(token)).Roster();
+```
+
+The await becomes the rows the terminal reduced to, and the rest is copied as a projection
+is. The document is unaffected: it is the chain's, and code after the await reads the rows
+as they arrived.
+
 **A chain stored in a local is followed.** Requiring one long expression would have missed
 most real code, so the reader picks the chain back up at the local it was assigned to and
 walks every use of it. The uses share a provider, so they must agree:

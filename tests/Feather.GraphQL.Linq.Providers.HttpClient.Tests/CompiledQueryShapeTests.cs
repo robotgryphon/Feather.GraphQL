@@ -498,6 +498,86 @@ public class CompiledQueryShapeTests
         });
     }
 
+    // ---- a body that goes on after the await --------------------------------------------------
+
+    /// <summary>
+    /// The chain awaited, and the answer processed by the caller's own code.
+    /// </summary>
+    /// <remarks>
+    /// The same bargain as a projection ending in a method of the caller's own, one level out.
+    /// What follows the await runs client-side over rows that have arrived, so the replacement
+    /// runs it where the rows are — and the document is still the chain's alone.
+    /// </remarks>
+    [GraphQLQuery]
+    private static async Task<string> EveryoneAsync(HttpClient client, CancellationToken cancellationToken)
+        => (await client.CreateQueryable<Person>("people")
+            .Select(person => person.Name)
+            .ToArrayAsync(cancellationToken)).Roster();
+
+    /// <summary>The rows as an argument rather than as a receiver.</summary>
+    [GraphQLQuery]
+    private static async Task<int> TotalAgeAsync(HttpClient client, int min, CancellationToken cancellationToken)
+        => Sum(await client.CreateQueryable<Person>("people")
+            .Where(person => person.Age > min)
+            .ToArrayAsync(cancellationToken));
+
+    /// <summary>A body that reduces to one row and then reads it.</summary>
+    [GraphQLQuery]
+    private static async Task<string> OldestNameAsync(HttpClient client, CancellationToken cancellationToken)
+        => (await client.CreateQueryable<Person>("people")
+            .OrderByDescending(person => person.Age)
+            .FirstAsync(cancellationToken)).Name;
+
+    internal static int Sum(Person[] people) => people.Sum(person => person.Age);
+
+    [Test]
+    public async Task A_body_that_goes_on_after_the_await_runs_over_the_rows()
+    {
+        var handler = new StubHandler(Two);
+
+        string roster = await EveryoneAsync(handler.Client(), CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            // The document is the chain's: what follows the await asks for nothing.
+            Assert.That(handler.SentBody, Is.EqualTo("""{"query":"query { people { name } }"}"""));
+            Assert.That(roster, Is.EqualTo("Ada, Alan"));
+        });
+    }
+
+    [Test]
+    public async Task The_awaited_rows_are_substituted_where_the_await_was()
+    {
+        var handler = new StubHandler(Two);
+
+        int total = await TotalAgeAsync(handler.Client(), 30, CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(handler.SentBody, Does.Contain(
+                "{ people(where: { age: { gt: $v0 } }) { name age } }"));
+
+            Assert.That(total, Is.EqualTo(77));
+        });
+    }
+
+    /// <summary>
+    /// A terminal that reduces to one row reduces the same way when the body reads it.
+    /// </summary>
+    [Test]
+    public async Task A_body_reading_the_row_a_terminal_kept_gets_that_row()
+    {
+        var handler = new StubHandler(Two);
+
+        string name = await OldestNameAsync(handler.Client(), CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(handler.SentBody, Does.Contain("people(order: $v0, take: $v1) { name age }"));
+            Assert.That(name, Is.EqualTo("Ada"));
+        });
+    }
+
     // ---- a predicate written against the server's filter input -------------------------------
 
     /// <summary>
@@ -758,6 +838,7 @@ public class Team
 /// </remarks>
 internal static class Rosters
 {
+    /// <summary>Used both inside a projection and around an awaited chain.</summary>
     public static string Roster(this IEnumerable<string> names) => string.Join(", ", names);
 
     /// <summary>Reads a field the projection never names, which is why all of them are asked for.</summary>

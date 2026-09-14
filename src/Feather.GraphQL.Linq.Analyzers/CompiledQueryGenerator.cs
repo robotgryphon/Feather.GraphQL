@@ -161,10 +161,10 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
 
         var (returnType, returned) = awaited;
 
-        // The body has to be the chain and nothing else. A method that also did something —
-        // logged, counted, cached — would have that something silently skipped, since the call
-        // this replaces is the call that would have run it.
-        if (Chain(declaration) is null)
+        // The body has to be one expression. A method whose body is a sequence of statements does
+        // something besides describe a query, and the something would be silently skipped — the
+        // call this replaces is the call that would have run it.
+        if (Chain(declaration) is not { } body)
             return Declined("its body is more than the chain it stands for");
 
         // One entry point, so there is one chain and no question which one the method is about.
@@ -239,14 +239,46 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         if (facts.HasOpaqueOrdering)
             return Declined("its ordering is not a key selector written at the call");
 
+        // What the body does with the rows once they are here. Nothing, when the body is the
+        // chain itself; otherwise an expression around the awaited chain, which runs client-side
+        // over the answer and is reproduced rather than dropped. Anything else written around the
+        // chain is code this cannot account for, and the body is declined rather than the code
+        // silently skipped.
+        if (!Awaits(body, facts.End, out var awaits))
+            return Declined("its body is more than the chain it stands for");
+
+        // A body that goes on to do something is reconciled against what it awaited rather than
+        // against what the method returns: the terminal decides the first, and the expression
+        // around it decides the second — which the C# compiler has already checked, since the
+        // body is the author's own and compiles where it was written.
+        var produced = awaits is null
+            ? returned
+            : context.SemanticModel.GetTypeInfo(awaits, token).Type;
+
+        if (produced is null || produced.TypeKind == TypeKind.Error)
+            return Declined("its terminal and its return type disagree — " + Expected(facts, shaped));
+
         // `Take(n).First()` asks for a page twice, and which size wins is the runtime's rule to
         // make rather than this one's to guess.
         if (facts.ExplicitTake && facts.Result != ResultKind.Sequence)
             return Declined("a Take and a result operator both ask for a page");
 
-        if (Reduction(facts, element, shaped, returned, out var resultType, out var reader, out var shape) is not { } result)
+        if (Reduction(facts, element, shaped, produced, out var resultType, out var reader, out var shape) is not { } result)
             return Declined(
                 "its terminal and its return type disagree — " + Expected(facts, shaped));
+
+        // The rows are what the body awaited, so what it wrote around the await is written around
+        // them — the author's own expression, copied as the projection is and for the same
+        // reason: it is already C#, and it runs where the answer is.
+        if (awaits is not null)
+        {
+            if (Around(body, awaits, result, method, context.SemanticModel, token) is not { } written)
+                return Declined(
+                    "what its body does with the rows reads something the replacement cannot — a "
+                    + "local it captured, or a member private to the declaring type");
+
+            result = written;
+        }
 
         FilterSkeletonModel? filter = null;
         var holes = ImmutableArray<(string Type, string Binding)>.Empty;
@@ -638,10 +670,73 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
             || produced.IsAnonymousType)
             return null;
 
-        // Everything the body may name: its own parameter, any a nested lambda introduces, and
-        // the parameters of the method being compiled — which the replacement has in scope
-        // because they are its own.
-        var available = new HashSet<ISymbol>(SymbolEqualityComparer.Default) { lambda.Parameters[0] };
+        if (!Copies(body, method, model, token, row: lambda.Parameters[0], excluding: null))
+            return null;
+
+        return Written(body, null, "", model, token) is { } written
+            ? new Shaping(produced, lambda.Parameters[0].Name, written)
+            : null;
+    }
+
+    /// <summary>
+    /// Re-emits what the body wrote around the chain it awaited, over the rows it awaited for.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The same copy the projection gets, one level out. A body that awaits and then does
+    /// something — joins the names, counts them, hands them to a method of its own — is doing it
+    /// client-side over the answer, so the replacement can do it in the same place: the await is
+    /// replaced by the rows, and the rest is the author's own expression.
+    /// </para>
+    /// <para>
+    /// The chain itself is exempt from the reading rules, because it is the part being replaced:
+    /// the client it posts through may be a private field, and that is reached by the accessor
+    /// rather than copied.
+    /// </para>
+    /// </remarks>
+    private static string? Around(
+        ExpressionSyntax body,
+        AwaitExpressionSyntax awaited,
+        string rows,
+        IMethodSymbol method,
+        SemanticModel model,
+        CancellationToken token)
+        => Copies(body, method, model, token, row: null, excluding: awaited)
+            ? Written(body, awaited, rows, model, token)
+            : null;
+
+    /// <summary>
+    /// Whether an expression can be copied into the replacement and mean there what it means here.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// What is declined is what the copy would not survive: a captured local, or a member the
+    /// generated file cannot reach. Both are read from the symbols the expression references
+    /// rather than guessed at from its shape.
+    /// </para>
+    /// <para>
+    /// <paramref name="row"/> is the projection's parameter, when there is one. What a projection
+    /// runs over is the payload's own row rather than the queried type: a struct carrying the
+    /// fields the document asked for, under the names the element gives them. So a path through
+    /// the parameter reads the same thing there as here — and the parameter itself does not,
+    /// because it is not that type.
+    /// </para>
+    /// </remarks>
+    private static bool Copies(
+        ExpressionSyntax body,
+        IMethodSymbol method,
+        SemanticModel model,
+        CancellationToken token,
+        IParameterSymbol? row,
+        SyntaxNode? excluding)
+    {
+        // Everything the body may name: the projection's own parameter, any a nested lambda
+        // introduces, and the parameters of the method being compiled — which the replacement has
+        // in scope because they are its own.
+        var available = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+
+        if (row is not null)
+            available.Add(row);
 
         foreach (var parameter in method.Parameters)
             available.Add(parameter);
@@ -652,55 +747,92 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
                 available.Add(nested);
         }
 
-        // What the projection runs over is the payload's own row rather than the queried type: a
-        // struct carrying the fields the document asked for, under the names the element gives
-        // them. So a path through the parameter reads the same thing there as here — and the
-        // parameter itself does not, because it is not that type. Handing it to something
-        // expecting the element would be a generated file that does not compile, which is a worse
-        // answer than declining.
-        foreach (var node in body.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
-        {
-            if (SymbolEqualityComparer.Default.Equals(
-                    model.GetSymbolInfo(node, token).Symbol, lambda.Parameters[0])
-                && !ReadsAField(node, model, token))
-                return null;
-        }
-
         foreach (var node in body.DescendantNodesAndSelf())
         {
+            // The part being replaced rather than copied, and nothing in it is read where the
+            // replacement is.
+            if (excluding?.Span.Contains(node.Span) == true)
+                continue;
+
             if (model.GetSymbolInfo(node, token).Symbol is not { } symbol)
                 continue;
 
+            if (row is not null
+                && node is IdentifierNameSyntax mention
+                && SymbolEqualityComparer.Default.Equals(symbol, row)
+                && !ReadsAField(mention, model, token))
+                return false;
+
             switch (symbol)
             {
-                // A lambda written inside the projection — the one a nested Select takes — is
-                // part of the projection and is copied with it. Its symbol is a method of
-                // nobody's, which no accessibility question has an answer for, so it is settled
-                // here rather than by the check below saying no to it.
+                // A lambda written inside the expression is part of it and is copied with it. Its
+                // symbol is a method of nobody's, which no accessibility question has an answer
+                // for, so it is settled here rather than by the check below saying no to it.
                 case IMethodSymbol { MethodKind: MethodKind.AnonymousFunction }:
                     continue;
 
                 // A value from the enclosing scope, which the call site does not have.
                 case ILocalSymbol:
                 case IRangeVariableSymbol:
-                    return null;
+                    return false;
 
                 case IParameterSymbol parameter when !available.Contains(parameter):
-                    return null;
+                    return false;
 
                 // A private helper is not reachable from the file the replacement lives in.
                 case IMethodSymbol or IPropertySymbol or IFieldSymbol or IEventSymbol
                     when !model.Compilation.IsSymbolAccessibleWithin(symbol, model.Compilation.Assembly):
-                    return null;
+                    return false;
             }
         }
 
-        var qualifier = new Qualifier(model, token);
+        return true;
+    }
+
+    /// <summary>The expression as the generated file spells it, or null when it cannot be.</summary>
+    private static string? Written(
+        ExpressionSyntax body,
+        AwaitExpressionSyntax? awaited,
+        string rows,
+        SemanticModel model,
+        CancellationToken token)
+    {
+        var qualifier = new Qualifier(model, token, awaited, rows);
         var written = qualifier.Visit(body);
 
-        return qualifier.Declined || written is null
-            ? null
-            : new Shaping(produced, lambda.Parameters[0].Name, written.ToFullString().Trim());
+        return qualifier.Declined || written is null ? null : written.ToFullString().Trim();
+    }
+
+    /// <summary>
+    /// Whether the body is the chain, or an expression around the chain awaited — and which.
+    /// </summary>
+    /// <remarks>
+    /// The load-bearing distinction now that a body may be more than the chain. What the chain
+    /// stands for ends at <paramref name="end"/>, which is the outermost call the reader
+    /// recognised rather than the outermost call there is; anything written around that has to be
+    /// accounted for. One await of it is accounted for by reproducing what surrounds it. A second
+    /// await, or a body that never awaits the chain at all, is something else going on in a method
+    /// whose calls are about to stop running it.
+    /// </remarks>
+    private static bool Awaits(ExpressionSyntax body, ExpressionSyntax? end, out AwaitExpressionSyntax? awaited)
+    {
+        awaited = null;
+
+        if (end is null)
+            return false;
+
+        if (body == end)
+            return true;
+
+        foreach (var node in body.DescendantNodesAndSelf().OfType<AwaitExpressionSyntax>())
+        {
+            if (awaited is not null)
+                return false;
+
+            awaited = node;
+        }
+
+        return awaited?.Expression == end;
     }
 
     /// <summary>
@@ -749,18 +881,49 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// Rewrites a copied expression's type names into ones that mean the same thing anywhere.
+    /// Rewrites a copied expression's names into ones that mean the same thing anywhere.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The generated file is not the file the projection was written in. Its usings are carried
     /// over, but a type nested in the declaring class cannot be imported by any of them — so
     /// every name that binds to a type is written out in full, which needs no import to resolve
     /// and cannot be captured by one either.
+    /// </para>
+    /// <para>
+    /// A member named on its own is the same problem wearing a different hat. <c>Sum(rows)</c>
+    /// resolves where it was written because the declaring type is around it, and resolves
+    /// nowhere in a file that is somewhere else — so it is written with the type that declares
+    /// it. One that is not static cannot be written at all: the replacement is a static method
+    /// with no instance to read it off, which is a decline rather than a guess.
+    /// </para>
     /// </remarks>
-    private sealed class Qualifier(SemanticModel model, CancellationToken token) : CSharpSyntaxRewriter
+    private sealed class Qualifier(
+        SemanticModel model,
+        CancellationToken token,
+        AwaitExpressionSyntax? awaited = null,
+        string rows = "") : CSharpSyntaxRewriter
     {
         /// <summary>Set when a name binds to a type that cannot be written out.</summary>
         public bool Declined { get; private set; }
+
+        /// <summary>
+        /// The chain, replaced by what it came back with.
+        /// </summary>
+        /// <remarks>
+        /// Parenthesised unless it does not need to be, because the rows may be an expression of
+        /// their own — <c>rows[0]</c>, <c>rows.Length &gt; 0</c> — and it is being substituted
+        /// into whatever the author wrote around the await, whose precedence is theirs.
+        /// </remarks>
+        public override SyntaxNode? VisitAwaitExpression(AwaitExpressionSyntax node)
+        {
+            if (node != awaited)
+                return base.VisitAwaitExpression(node);
+
+            bool bare = node.Parent is ParenthesizedExpressionSyntax || SyntaxFacts.IsValidIdentifier(rows);
+
+            return SyntaxFactory.ParseExpression(bare ? rows : "(" + rows + ")").WithTriviaFrom(node);
+        }
 
         public override SyntaxNode? VisitIdentifierName(IdentifierNameSyntax node)
             => Qualify(node) ?? base.VisitIdentifierName(node);
@@ -771,20 +934,55 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         private SyntaxNode? Qualify(SimpleNameSyntax node)
         {
             // The right-hand side of a member access is reached through its left, which is
-            // qualified instead; a property named in an initializer is not a type at all.
+            // qualified instead.
             if (node.Parent is MemberAccessExpressionSyntax access && access.Name == node)
                 return null;
 
-            if (model.GetSymbolInfo(node, token).Symbol is not ITypeSymbol type)
+            // A member named in an initializer is named on the object being built, which is
+            // already written out; it is not a reference to anything the generated file resolves.
+            if (node.Parent is AssignmentExpressionSyntax { Parent: InitializerExpressionSyntax } assignment
+                && assignment.Left == node)
                 return null;
 
-            if (type.TypeKind == TypeKind.Error || type.IsAnonymousType)
+            var symbol = model.GetSymbolInfo(node, token).Symbol;
+
+            if (symbol is ITypeSymbol type)
+            {
+                if (type.TypeKind == TypeKind.Error || type.IsAnonymousType)
+                {
+                    Declined = true;
+                    return node;
+                }
+
+                return SyntaxFactory.ParseTypeName(type.ToDisplayString(_signature)).WithTriviaFrom(node);
+            }
+
+            if (symbol is not (IMethodSymbol or IPropertySymbol or IFieldSymbol or IEventSymbol)
+                || symbol.ContainingType is not { } owner)
+                return null;
+
+            // An instance member reached through an implicit `this`, which the replacement is not
+            // inside of.
+            if (!symbol.IsStatic)
             {
                 Declined = true;
                 return node;
             }
 
-            return SyntaxFactory.ParseTypeName(type.ToDisplayString(_signature)).WithTriviaFrom(node);
+            // Visited first, so a generic method's type arguments are written out too.
+            var written = node is GenericNameSyntax generic
+                ? base.VisitGenericName(generic) as SimpleNameSyntax
+                : node;
+
+            if (written is null)
+            {
+                Declined = true;
+                return node;
+            }
+
+            return SyntaxFactory
+                .ParseExpression(owner.ToDisplayString(_signature) + "." + written.ToString())
+                .WithTriviaFrom(node);
         }
     }
 

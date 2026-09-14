@@ -52,6 +52,12 @@ namespace Feather.GraphQL;
 /// shape.
 /// </para>
 /// <para>
+/// A method whose body is a chain may also await it and go on: <c>(await chain.ToArrayAsync(ct))
+/// .Summarise()</c> compiles, with everything written around the await run over the rows where
+/// they arrive. One await, of the chain and nothing else — a body that wraps the chain without
+/// awaiting it is <c>FGQL015</c>, since the wrapper is code the replacement would drop.
+/// </para>
+/// <para>
 /// A chain the compiler cannot compile — <c>FGQL015</c> says which and why — keeps its body and
 /// keeps working, translated at run time as any other chain is. A document it cannot read is
 /// <c>FGQL016</c>, and an error: a partial method has nothing to fall back to.
