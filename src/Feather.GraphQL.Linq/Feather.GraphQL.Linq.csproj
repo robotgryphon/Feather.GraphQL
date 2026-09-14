@@ -9,7 +9,10 @@
     <RootNamespace>Feather.GraphQL.Linq</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="JetBrains.Annotations" />
+    <!-- [PublicAPI] and [UsedImplicitly] are hints for an IDE and nothing else reads them,
+         so the reference is compile-time only: PrivateAssets keeps the assembly out of
+         every consumer's dependency graph and out of what they publish. -->
+    <PackageReference Include="JetBrains.Annotations" PrivateAssets="all" />
   </ItemGroup>
   <ItemGroup>
     <!-- The transport that ships beside this one reads replies with the internal reply reader.
@@ -47,6 +50,16 @@
   <ItemGroup>
     <None Include="..\Feather.GraphQL.Linq.Analyzers\bin\$(Configuration)\netstandard2.0\Feather.GraphQL.Linq.Analyzers.dll"
           Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Turns the interceptor namespace on in every project that compiles a chain; see the props
+         itself. It goes in buildTransitive rather than build because the package a consumer
+         installs is usually Feather.GraphQL.Linq.Providers.HttpClient, which brings this one in
+         as a dependency — and a build folder reaches direct references only, which would leave
+         exactly that consumer with generated interceptors the compiler refuses. Without it a
+         compiled chain fails to build with CS9137. -->
+    <None Include="buildTransitive\Feather.GraphQL.Linq.props"
+          Pack="true" PackagePath="buildTransitive" Visible="false" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="Attributes\" />

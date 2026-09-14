@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Feather.GraphQL.AotSmoke</RootNamespace>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <TrimmerSingleWarn>false</TrimmerSingleWarn>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- The version dotnet pack was told to write. CI passes the one it just built; a local run
+         can pass whatever is in nupkg/. -->
+    <FeatherVersion Condition="'$(FeatherVersion)' == ''">0.0.1-local</FeatherVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      One reference, and nothing else. No interceptor opt-in, no analyzer reference, no property
+      of any kind: a consumer installs the transport and writes a chain, and if the package does
+      not carry what that needs then this project does not build. Which is the whole test.
+    -->
+    <PackageReference Include="Feather.GraphQL.Linq.Providers.HttpClient" Version="$(FeatherVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The same program the AOT sample publishes, so the two cannot disagree about what a
+         working consumer looks like. That one proves the claim against the projects in src/;
+         this one proves it against the packages built from them. -->
+    <Compile Include="..\Feather.GraphQL.AotSmoke\Program.cs" Link="Program.cs" />
+  </ItemGroup>
+
+</Project>

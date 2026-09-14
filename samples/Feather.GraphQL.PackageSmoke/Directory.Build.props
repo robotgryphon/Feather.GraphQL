@@ -1,0 +1,13 @@
+<Project>
+
+  <!--
+    Deliberately empty, and the point of the project.
+
+    The repository's own Directory.Build.props turns the interceptor namespace on for every
+    project under it. That is right for projects that reference the library by project — and it
+    is also what hid the packaged copy of that opt-in going missing, because every project here
+    went on building without it. Stopping the import chain here means this project is told
+    nothing by the repository and everything by the package, which is the consumer's position.
+  -->
+
+</Project>

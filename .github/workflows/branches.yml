@@ -78,6 +78,19 @@ jobs:
     - name: Create NuGet packages
       run: dotnet pack -c Release --no-restore --no-build -o nupkg -p:Version=${{ steps.version.outputs.version }}
 
+    - name: Verify the packages carry what a consumer needs
+      # The AOT step above proves the claim against the projects in src/, which is not the same
+      # thing: every project in this repository is handed the interceptor opt-in by
+      # Directory.Build.props, so a package that stopped carrying its own copy would still build
+      # here and fail in the first consumer to install it. This publishes the same program against
+      # the packages just written, with nothing but a PackageReference to go on.
+      run: |
+        dotnet publish samples/Feather.GraphQL.PackageSmoke -c Release -r linux-x64 \
+          -p:PublishAot=true -p:FeatherVersion=${{ steps.version.outputs.version }} \
+          -warnaserror
+
+        ./samples/Feather.GraphQL.PackageSmoke/bin/Release/net10.0/linux-x64/publish/Feather.GraphQL.PackageSmoke
+
     - name: Upload nuget packages
       uses: actions/upload-artifact@v4
       with:
