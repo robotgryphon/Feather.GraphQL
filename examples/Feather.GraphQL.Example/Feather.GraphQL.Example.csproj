@@ -8,15 +8,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Feather.GraphQL.Linq.Providers.HttpClient\Feather.GraphQL.Linq.Providers.HttpClient.csproj" />
-    <!-- The compile-time half of the rule table. Ships inside the Linq package for consumers;
-         referenced explicitly here because analyzers do not flow across project references. -->
-    <ProjectReference Include="..\..\src\Feather.GraphQL.Linq.Analyzers\Feather.GraphQL.Linq.Analyzers.csproj"
-                      OutputItemType="Analyzer" ReferenceOutputAssembly="false"
-                      UndefineProperties="PublishAot;RuntimeIdentifier;SelfContained" />
-  </ItemGroup>
-
-  <ItemGroup>
+    <PackageReference Include="Feather.GraphQL.Http" />
+    <PackageReference Include="Feather.GraphQL.Linq" />
+    <PackageReference Include="Feather.GraphQL.Linq.Providers.HttpClient" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <PackageReference Include="Microsoft.Extensions.Http" />
   </ItemGroup>
