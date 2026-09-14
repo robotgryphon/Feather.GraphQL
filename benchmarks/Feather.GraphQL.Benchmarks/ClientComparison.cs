@@ -191,3 +191,16 @@ public partial class ClientComparison
         return response.Data.Countries.Length;
     }
 }
+
+/// <summary>
+/// A model of the server's filter input, whose shape is not the element's.
+/// </summary>
+/// <remarks>
+/// A reply's <c>continent</c> is an object with a name; the filter input takes a string filter
+/// directly. Declared here rather than borrowed from the example project, which references the
+/// published packages and would put a second copy of the library on this compilation.
+/// </remarks>
+internal sealed class CountryFilter
+{
+    public string? Continent { get; set; }
+}

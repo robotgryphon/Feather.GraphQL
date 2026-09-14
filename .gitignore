@@ -8,3 +8,6 @@ nuget/
 .DS_Store
 TestResult.xml
 BenchmarkDotNet.Artifacts/
+
+# Claude Code: shared config is tracked, per-machine permissions are not.
+.claude/settings.local.json
