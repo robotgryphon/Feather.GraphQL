@@ -296,7 +296,8 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
 
         var bindings = new List<DocumentBinding>();
 
-        if (QueryDocumentWriter.TryWrite(facts, context.SemanticModel, token, bindings) is not { } document)
+        if (QueryDocumentWriter.TryWrite(facts, context.SemanticModel, token, bindings, filter)
+            is not { } document)
             return Declined("its document could not be printed at compile time");
 
         var payload = ImmutableArray.CreateBuilder<PayloadPart>();
@@ -309,6 +310,12 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
                 case BoundValue.Filter:
                     // Its holes were numbered first, which is also where the writer bound it.
                     payload.Add(new PayloadPart(binding.Name, [.. filter!.Steps]));
+                    continue;
+
+                case BoundValue.FilterValue:
+                    // The structure went into the document, so this variable is one comparison's
+                    // value and nothing around it — the hole on its own, with no shape to write.
+                    payload.Add(new PayloadPart(binding.Name, OneValue(binding.Hole)));
                     continue;
 
                 case BoundValue.Order:
@@ -335,7 +342,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
                         || Value(argument, method, context.SemanticModel, token) is not { } size)
                         return Declined("its page size is not a parameter or a constant");
 
-                    payload.Add(new PayloadPart(binding.Name, PageHole(bound.Count)));
+                    payload.Add(new PayloadPart(binding.Name, OneValue(bound.Count)));
                     bound.Add(("int", size));
                     continue;
                 }
@@ -803,8 +810,11 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
     private static ImmutableArray<FilterStep> PageConstant(string number)
         => [new FilterStep(number, -1)];
 
-    /// <summary>A page size the caller passes, which waits for the value at <paramref name="hole"/>.</summary>
-    private static ImmutableArray<FilterStep> PageHole(int hole)
+    /// <summary>
+    /// A variable that is one value and nothing else: a page size the caller passes, or a
+    /// comparison's value for a filter whose structure went into the document.
+    /// </summary>
+    private static ImmutableArray<FilterStep> OneValue(int hole)
         => [new FilterStep("", hole)];
 
     /// <summary>

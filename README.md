@@ -67,9 +67,12 @@ var countries = await Queries.InContinentAsync(client, "EU");
 What goes on the wire is fixed when you build:
 
 ```json
-{"query":"query($v0: CountryFilterInput) { countries(filter: $v0) { name continent { name } } }",
- "variables":{"v0":{"continent":{"eq":"EU"}}}}
+{"query":"query($v0: String) { countries(filter: { continent: { eq: $v0 } }) { name continent { name } } }",
+ "variables":{"v0":"EU"}}
 ```
+
+The predicate is in the document, not hidden inside a variable — see
+[§2](#why-the-filter-is-in-the-document) for why, and how to turn it off.
 
 ### Where the `HttpClient` comes from
 
@@ -136,8 +139,9 @@ flowchart TD
         EMIT["CompiledQueryGenerator<br/>emits the interceptor"]
 
         SRC --> READ --> DOC
+        READ --> FIL
         DOC --> SEL
-        DOC --> FIL
+        FIL --> DOC
         READ --> REPLY
         DOC --> BODY
         FIL --> BODY
@@ -170,15 +174,34 @@ replaced.
 What the generator emits for the query above, roughly:
 
 ```csharp
-using var body = PooledBody.Rent(138);
+using var body = PooledBody.Rent(128);
 
-body.WriteRaw("{\"query\":\"query($v0: CountryFilterInput) { countries(filter: $v0) "
-            + "{ name continent { name } } }\",\"variables\":{\"v0\":{\"continent\":{\"eq\":"u8);
+body.WriteRaw("{\"query\":\"query($v0: String) { countries(filter: { continent: { eq: $v0 } }) "
+            + "{ name continent { name } } }\",\"variables\":{\"v0\":"u8);
 body.Write(code);
-body.WriteRaw("}}}}"u8);
+body.WriteRaw("}}"u8);
 ```
 
 The document is never escaped at run time, because it was escaped once when you built.
+
+### Why the filter is in the document
+
+The predicate is written out where the server can read it, with a variable for each value it
+compares against — not handed over whole as `filter: $v0`. Both ask for the same rows, but only
+one of them says so in the document: a cost or complexity analyser runs over the query before any
+variable is coerced, so an opaque input object is one it has to assume the worst of. Written out,
+the shape is the query's and only the values are late.
+
+The cost is that a variable in a document has to declare its type, and what the schema calls a
+comparison's value is inferred from the CLR type against HotChocolate's defaults — `string` is
+`String`, `Guid` is `UUID`, `int` is `Int`. A type that could reasonably be called several things
+is not guessed: `char`, `TimeSpan`, `Uri` and the unsigned integers leave the whole filter in one
+variable of the filter input type, which needs no such name. Where the inference is wrong for your
+schema — a field it types as `ID`, say, against a `string` here — turn it off for that query:
+
+```csharp
+client.CreateQueryable<Country>("countries", o => o.InlineFilter = false)
+```
 
 ---
 

@@ -6,7 +6,12 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 namespace Feather.GraphQL.Linq.Analyzers;
 
 /// <summary>What one of a document's variables carries.</summary>
-internal enum BoundValue { Filter, Order, Take, Skip, Last }
+/// <remarks>
+/// <c>Filter</c> is a whole filter passed as one value of the schema's filter input type;
+/// <c>FilterValue</c> is a single comparison's value, for a filter whose structure went into the
+/// document instead.
+/// </remarks>
+internal enum BoundValue { Filter, FilterValue, Order, Take, Skip, Last }
 
 /// <summary>One variable a document declared, and what the chain bound to it.</summary>
 /// <remarks>
@@ -14,7 +19,14 @@ internal enum BoundValue { Filter, Order, Take, Skip, Last }
 /// runtime. The order is the document's numbering, which is the order the payload's properties
 /// have to be written in for the two to agree.
 /// </remarks>
-internal readonly record struct DocumentBinding(BoundValue Kind, string Name, string Type);
+/// <param name="Kind">What the chain bound to it.</param>
+/// <param name="Name">The variable's name in the document, which is its number.</param>
+/// <param name="Type">The GraphQL type it was declared as.</param>
+/// <param name="Hole">
+/// Which of the filter's values this variable carries, for <see cref="BoundValue.FilterValue"/>;
+/// -1 for everything else.
+/// </param>
+internal readonly record struct DocumentBinding(BoundValue Kind, string Name, string Type, int Hole = -1);
 
 /// <summary>
 /// Prints the document a chain would produce, at compile time.
@@ -31,14 +43,20 @@ internal static class QueryDocumentWriter
     /// <param name="model">The semantic model the chain was written in.</param>
     /// <param name="token">Cancels the analysis.</param>
     /// <param name="bindings">
-    /// Collects what each variable carries, in the document's own numbering, for a caller writing
-    /// the payload itself. Null for the callers that only need the text.
+    /// Collects what each variable carries, in the document's own numbering, which is the order
+    /// the payload's properties have to be written in.
+    /// </param>
+    /// <param name="filter">
+    /// The filter's printed shape, when the chain has one this could print. Given, and inlinable,
+    /// the filter's structure is written into the document and only its values become variables;
+    /// otherwise the whole filter is one variable of the schema's filter input type.
     /// </param>
     public static string? TryWrite(
         ChainFacts facts,
         SemanticModel model,
         CancellationToken token,
-        List<DocumentBinding>? bindings = null)
+        List<DocumentBinding> bindings,
+        FilterSkeletonModel? filter = null)
     {
         if (!ApplyResult(facts))
             return null;
@@ -52,21 +70,33 @@ internal static class QueryDocumentWriter
             return null;
 
         var variables = new List<(string Name, string Type)>();
-        var arguments = new List<(string Name, string Variable)>();
+        var arguments = new List<(string Name, string Value)>();
 
-        string Bind(string argument, string type, BoundValue kind)
+        // A variable nothing else names: declared, and referred to wherever it is wanted.
+        string Declare(string type, BoundValue kind, int hole = -1)
         {
             string name = "v" + variables.Count;
             variables.Add((name, type));
-            arguments.Add((argument, name));
-            bindings?.Add(new DocumentBinding(kind, name, type));
+            bindings.Add(new DocumentBinding(kind, name, type, hole));
             return name;
         }
 
+        // A variable that is the whole of one argument, which is most of them.
+        void Bind(string argument, string type, BoundValue kind)
+            => arguments.Add((argument, "$" + Declare(type, kind)));
+
         // The binding order is the document's variable numbering, so it must match exactly.
         if (facts.HasFilter)
-            Bind(facts.FilterArgument, facts.FilterInput ?? facts.ElementType.Name + "FilterInput",
-                BoundValue.Filter);
+        {
+            // The structure written out, with a variable for each value it compares against.
+            // What a cost analyser sees is then the filter itself rather than an opaque input
+            // object it has to assume the worst of.
+            if (facts.InlineFilter && filter is { CanInline: true })
+                arguments.Add((facts.FilterArgument, Inline(filter, Declare)));
+            else
+                Bind(facts.FilterArgument, facts.FilterInput ?? facts.ElementType.Name + "FilterInput",
+                    BoundValue.Filter);
+        }
 
         if (facts.HasOrdering)
             Bind(facts.OrderArgument, "[" + (facts.SortInput ?? facts.ElementType.Name + "SortInput") + "!]",
@@ -108,7 +138,7 @@ internal static class QueryDocumentWriter
                 if (i > 0)
                     builder.Append(", ");
 
-                builder.Append(arguments[i].Name).Append(": $").Append(arguments[i].Variable);
+                builder.Append(arguments[i].Name).Append(": ").Append(arguments[i].Value);
             }
 
             builder.Append(')');
@@ -117,6 +147,32 @@ internal static class QueryDocumentWriter
         builder.Append(" { ").Append(selection).Append(" } }");
 
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// The filter as a value in the document, with a variable declared for each of its leaves.
+    /// </summary>
+    /// <remarks>
+    /// The holes come out of the skeleton in ascending order, so declaring them as they are met
+    /// numbers the variables in the order they are written — which is the order the payload has
+    /// to put them in, and the only thing keeping the document and the body agreeing.
+    /// </remarks>
+    private static string Inline(
+        FilterSkeletonModel filter,
+        Func<string, BoundValue, int, string> declare)
+    {
+        var text = new StringBuilder();
+
+        foreach (var step in filter.Literal)
+        {
+            if (step.Hole < 0)
+                text.Append(step.Json);
+            else
+                text.Append('$').Append(
+                    declare(filter.Holes[step.Hole].Scalar!, BoundValue.FilterValue, step.Hole));
+        }
+
+        return text.ToString();
     }
 
     /// <summary>

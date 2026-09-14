@@ -89,9 +89,9 @@ public class CompiledQueryTests
         Assert.Multiple(() =>
         {
             Assert.That(handler.SentBody,
-                Does.Contain(@"query($v0: PersonFilterInput) { people(where: $v0) { name age } }"));
+                Does.Contain(@"query($v0: Int) { people(where: { age: { gt: $v0 } }) { name age } }"));
 
-            Assert.That(handler.SentBody, Does.Contain(@"""variables"":{""v0"":{""age"":{""gt"":30}}}"));
+            Assert.That(handler.SentBody, Does.Contain(@"""variables"":{""v0"":30}"));
 
         });
     }
@@ -104,7 +104,7 @@ public class CompiledQueryTests
         await NamedOlderThanAsync(handler.Client(), "Ada", 30, CancellationToken.None);
 
         Assert.That(handler.SentBody,
-            Does.Contain(@"""variables"":{""v0"":{""name"":{""eq"":""Ada""},""age"":{""gt"":30}}}"));
+            Does.Contain(@"""variables"":{""v0"":""Ada"",""v1"":30}"));
     }
 
     [Test]
@@ -114,7 +114,7 @@ public class CompiledQueryTests
 
         await AdultsAsync(handler.Client());
 
-        Assert.That(handler.SentBody, Does.Contain(@"""variables"":{""v0"":{""age"":{""gte"":18}}}"));
+        Assert.That(handler.SentBody, Does.Contain(@"""variables"":{""v0"":18}"));
     }
 
     [Test]
@@ -144,11 +144,14 @@ public class CompiledQueryTests
         // Through a local, so the entry-point interceptor cannot precompile it either — this is
         // the chain translated end to end at run time.
 
-        // Frozen from the runtime translation while both paths still existed. When the runtime
-        // path goes, this literal is what is left of the comparison — the bytes the two agreed
-        // on, rather than a guess at what the compiler ought to emit.
+        // A whole body, asserted byte for byte rather than by parts. It was frozen from the
+        // runtime translation while both paths still existed; the filter has since moved out of
+        // a variable and into the document, so the two no longer agree about it and what this
+        // pins is the compiled output itself — nothing else asserts the envelope, the spacing
+        // and the variable numbering all at once.
         const string Agreed =
-            "{\"query\":\"query($v0: PersonFilterInput) { people(where: $v0) { name age } }\",\"variables\":{\"v0\":{\"age\":{\"gt\":30}}}}";
+            "{\"query\":\"query($v0: Int) { people(where: { age: { gt: $v0 } }) { name age } }\","
+        + "\"variables\":{\"v0\":30}}";
 
         Assert.That(compiled.SentBody, Is.EqualTo(Agreed));
     }

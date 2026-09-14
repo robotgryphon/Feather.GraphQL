@@ -39,6 +39,27 @@ public class GraphQLQueryOptions
     public string? SortInput { get; set; }
 
     /// <summary>
+    /// Whether a compiled filter is written into the document rather than passed whole.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// On by default, which produces <c>where: { name: { eq: $v0 } }</c> with one variable per
+    /// value compared against. A server sees the predicate it is being asked for, which is what a
+    /// cost or complexity analyser needs — passed whole as <c>where: $v0</c> the filter is an
+    /// opaque input object, and an analyser that cannot see inside it has to assume the worst.
+    /// </para>
+    /// <para>
+    /// The cost is that writing a variable into the document means declaring its type, and what
+    /// the schema calls the value of a comparison is inferred from the CLR type against
+    /// HotChocolate's defaults. Where that inference is wrong — a field the schema types as
+    /// <c>ID</c>, say, against a <c>string</c> here — the server rejects the query, and setting
+    /// this to false restores the form that never has to name a scalar. A value whose type has no
+    /// certain name falls back on its own without being asked.
+    /// </para>
+    /// </remarks>
+    public bool InlineFilter { get; set; } = true;
+
+    /// <summary>
     /// How the server wraps this field's result. Cannot be inferred from the CLR type and must
     /// match the server, since it changes both the emitted selection set and the path the
     /// materializer walks.
@@ -57,6 +78,7 @@ public class GraphQLQueryOptions
         target.RootField = RootField;
         target.FilterInput = FilterInput;
         target.SortInput = SortInput;
+        target.InlineFilter = InlineFilter;
         target.Paging = Paging;
         target.FilterProvider = FilterProvider;
     }

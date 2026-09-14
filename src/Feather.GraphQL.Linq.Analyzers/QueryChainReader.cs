@@ -86,6 +86,14 @@ internal sealed class ChainFacts
     public string? FilterInput;
     public string? SortInput;
 
+    /// <summary>Whether the filter's structure may be written into the document.</summary>
+    /// <remarks>
+    /// On unless the call said otherwise. Off puts the whole filter back in one variable of the
+    /// filter input type, which is the form that needs no opinion about what the schema calls the
+    /// value of a comparison.
+    /// </remarks>
+    public bool InlineFilter = true;
+
     /// <summary>True when the chain chose where to post, or which dialect to lower filters in.</summary>
     /// <remarks>
     /// Neither changes a character of the document, which is why the document printer ignores
@@ -635,6 +643,10 @@ internal static class QueryChainReader
 
                 case "SortInput" when constant.Value is string sort:
                     facts.SortInput = sort;
+                    break;
+
+                case "InlineFilter" when constant.Value is bool inline:
+                    facts.InlineFilter = inline;
                     break;
 
                 case "Paging" when constant.Value is int paging and >= 0 and <= 2:

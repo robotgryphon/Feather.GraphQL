@@ -124,6 +124,75 @@ internal static class GraphQLTypeFacts
             or SpecialType.System_Char;
 
     /// <summary>
+    /// What a value of this type is called in the schema, or null when there is no name this can
+    /// be sure of.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Needed only where a scalar has to be <em>declared</em> rather than merely written: a
+    /// filter whose structure goes into the document names one variable per value, and a variable
+    /// has to say what type it is. Nothing else in the library needs this, because a value
+    /// written into a variables payload is coerced by the server against the input type it lands
+    /// in and never has to name itself.
+    /// </para>
+    /// <para>
+    /// The names are HotChocolate's defaults, which is the dialect the operations in
+    /// <see cref="FilterSkeleton"/> are already hard-coded to. Deliberately partial: a type whose
+    /// schema name is a judgement call — <c>Uri</c>, <c>TimeSpan</c>, <c>char</c>, the unsigned
+    /// integers — answers null, and the caller keeps the form that needs no name. Guessing wrong
+    /// here is not a compile error but a query the server rejects, so the list holds only the
+    /// mappings that are not a guess.
+    /// </para>
+    /// </remarks>
+    public static string? ScalarName(ITypeSymbol type)
+        => UnwrapNullable(type).SpecialType switch
+        {
+            SpecialType.System_String => "String",
+            SpecialType.System_Boolean => "Boolean",
+            SpecialType.System_Byte => "Byte",
+            SpecialType.System_Int16 => "Short",
+            SpecialType.System_Int32 => "Int",
+            SpecialType.System_Int64 => "Long",
+            SpecialType.System_Single or SpecialType.System_Double => "Float",
+            SpecialType.System_Decimal => "Decimal",
+            SpecialType.System_DateTime => "DateTime",
+            _ => UnwrapNullable(type).ToDisplayString(_metadataNames) switch
+            {
+                "System.Guid" => "UUID",
+                "System.DateTimeOffset" => "DateTime",
+                "System.DateOnly" => "Date",
+                _ => null
+            }
+        };
+
+    /// <summary>
+    /// Whether a name can be written into a document unquoted.
+    /// </summary>
+    /// <remarks>
+    /// A field name reaches a variables payload as a JSON string, where anything goes. Written
+    /// into the document instead it is a GraphQL name, and the grammar is narrower than
+    /// <c>[JsonPropertyName]</c> is: a caller that renames a member to something with a dash in
+    /// it has to keep the form that quotes it.
+    /// </remarks>
+    public static bool IsGraphQLName(string name)
+    {
+        // The grammar is /[_A-Za-z][_0-9A-Za-z]*/ and nothing wider: char.IsLetter would accept
+        // most of Unicode, which a server would not.
+        if (name.Length == 0 || (!Letter(name[0]) && name[0] != '_'))
+            return false;
+
+        foreach (char c in name)
+        {
+            if (!Letter(c) && c != '_' && (c < '0' || c > '9'))
+                return false;
+        }
+
+        return true;
+
+        static bool Letter(char c) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    }
+
+    /// <summary>
     /// A field that needs no selection set of its own: a scalar, or a list of them.
     /// </summary>
     public static bool IsLeaf(ITypeSymbol type)

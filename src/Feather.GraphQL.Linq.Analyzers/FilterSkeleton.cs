@@ -12,7 +12,11 @@ namespace Feather.GraphQL.Linq.Analyzers;
 /// The expression the value is read from, when a caller asked for the leaves to be bound at
 /// compile time; null when the runtime supplies them from the expression tree.
 /// </param>
-internal sealed record FilterHole(string Type, string? Binding = null);
+/// <param name="Scalar">
+/// What the value is called in the schema, for a caller declaring a variable of its own for it;
+/// null when <see cref="GraphQLTypeFacts.ScalarName"/> would be guessing.
+/// </param>
+internal sealed record FilterHole(string Type, string? Binding = null, string? Scalar = null);
 
 /// <summary>
 /// A filter's shape, printed at compile time, with its values left as holes.
@@ -24,6 +28,7 @@ internal sealed record FilterHole(string Type, string? Binding = null);
 /// </remarks>
 internal sealed class FilterSkeletonModel(
     IReadOnlyList<FilterStep> steps,
+    IReadOnlyList<FilterStep> literal,
     IReadOnlyList<FilterHole> holes)
 {
     /// <summary>The filter as constant JSON and the places values go.</summary>
@@ -34,8 +39,45 @@ internal sealed class FilterSkeletonModel(
     /// </remarks>
     public IReadOnlyList<FilterStep> Steps { get; } = steps;
 
+    /// <summary>
+    /// The same filter as a GraphQL value, for writing into the document instead of into a
+    /// variable.
+    /// </summary>
+    /// <remarks>
+    /// Not JSON: a GraphQL object literal leaves its field names unquoted, and a hole here stands
+    /// for a reference to the variable that value was given rather than for the value itself. The
+    /// hole numbering is <see cref="Steps"/>'s, so the two renderings agree about which value is
+    /// which.
+    /// </remarks>
+    public IReadOnlyList<FilterStep> Literal { get; } = literal;
+
     /// <summary>The values to fill, in the order the runtime will collect them.</summary>
     public IReadOnlyList<FilterHole> Holes { get; } = holes;
+
+    /// <summary>
+    /// Whether this filter can be written into the document rather than passed whole.
+    /// </summary>
+    /// <remarks>
+    /// Every value has to be able to name its own type, because inlining the structure means
+    /// declaring a variable per value and a variable says what it is. One that cannot leaves the
+    /// whole filter as it was: a partly inlined filter would need both forms at once.
+    /// </remarks>
+    public bool CanInline
+    {
+        get
+        {
+            if (Literal.Count == 0 || Holes.Count == 0)
+                return false;
+
+            foreach (var hole in Holes)
+            {
+                if (hole.Scalar is null)
+                    return false;
+            }
+
+            return true;
+        }
+    }
 
     /// <summary>
     /// Whether two call sites printed the same filter.
@@ -119,8 +161,16 @@ internal static class FilterSkeleton
     }
 
     /// <summary>One comparison: a field path, an operation, and the value that goes under it.</summary>
+    /// <param name="Path">The field path the comparison names, from the filter's root.</param>
+    /// <param name="Operation">The provider's name for the comparison — <c>eq</c> and the rest.</param>
+    /// <param name="ValueType">How the value is declared where it is filled in.</param>
+    /// <param name="Binding">The expression the value is read from, when a caller asked for one.</param>
+    /// <param name="Scalar">
+    /// What the schema calls the value, or null when nothing can be said for certain — which is
+    /// what keeps the filter out of the document and in a variable of its own.
+    /// </param>
     private sealed record Clause(
-        IReadOnlyList<string> Path, string Operation, string ValueType, string? Binding);
+        IReadOnlyList<string> Path, string Operation, string ValueType, string? Binding, string? Scalar);
 
     /// <summary>
     /// Flattens a conjunction into its comparisons, in source order.
@@ -187,7 +237,9 @@ internal static class FilterSkeleton
         if (bind is not null && (binding = bind(binary.Right)) is null)
             return false;
 
-        clauses.Add(new Clause(path, operation, Display(valueType), binding));
+        clauses.Add(new Clause(
+            path, operation, Display(valueType), binding, GraphQLTypeFacts.ScalarName(valueType)));
+
         return true;
     }
 
@@ -277,16 +329,20 @@ internal static class FilterSkeleton
         }
 
         var steps = new StepBuilder();
+        var literal = new StepBuilder();
         var holes = new List<FilterHole>();
 
-        // The filter object itself, which sits as the value of the variable the document declares.
+        // The filter object itself: the value of the variable the document declares, or — when
+        // every value can name its own type — the value written into the document in its place.
         steps.Const("{");
+        literal.Const("{ ");
 
-        Write(steps, clauses, prefix: [], depth: 0, holes);
+        Write(steps, literal, clauses, prefix: [], depth: 0, holes);
 
         steps.Const("}");
+        literal.Const(" }");
 
-        return new FilterSkeletonModel(steps.Steps, holes);
+        return new FilterSkeletonModel(steps.Steps, literal.Steps, holes);
     }
 
     /// <summary>Two clauses collide when one's path is a prefix of the other's, or they match.</summary>
@@ -303,8 +359,16 @@ internal static class FilterSkeleton
     }
 
     /// <summary>Emits every clause under one prefix, grouping those that descend together.</summary>
+    /// <remarks>
+    /// Both renderings are built in the one walk, because they have to describe the same filter
+    /// and the surest way to keep them agreeing is for the same loop to write both. They differ
+    /// only in how a name and a value are spelled: JSON quotes its field names, a GraphQL literal
+    /// does not, and where JSON leaves a hole for the value the literal leaves one for the
+    /// variable that carries it.
+    /// </remarks>
     private static void Write(
         StepBuilder steps,
+        StepBuilder literal,
         List<Clause> clauses,
         List<string> prefix,
         int depth,
@@ -321,9 +385,11 @@ internal static class FilterSkeleton
 
             // A writer puts its own commas in; bytes do not, so this level separates its members.
             steps.Separated(written.Count);
+            literal.Separated(written.Count, ", ");
             written.Add(segment);
 
             steps.Property(segment);
+            literal.Name(segment);
 
             if (clause.Path.Count == depth + 1)
             {
@@ -332,17 +398,31 @@ internal static class FilterSkeleton
                 steps.Hole(holes.Count);
                 steps.Const("}");
 
-                holes.Add(new FilterHole(clause.ValueType, clause.Binding));
+                literal.Const("{ ");
+                literal.Name(clause.Operation);
+                literal.Hole(holes.Count);
+                literal.Const(" }");
+
+                // A name that has to be quoted cannot go in the document, whatever its value's
+                // type is, because the literal would not parse. Declining it here declines the
+                // inlining for the whole filter, which is what CanInline reads off a null scalar.
+                holes.Add(new FilterHole(
+                    clause.ValueType,
+                    clause.Binding,
+                    Writable(clause) ? clause.Scalar : null));
+
                 continue;
             }
 
             var deeper = new List<string>(prefix) { segment };
 
             steps.Const("{");
+            literal.Const("{ ");
 
-            Write(steps, clauses, deeper, depth + 1, holes);
+            Write(steps, literal, clauses, deeper, depth + 1, holes);
 
             steps.Const("}");
+            literal.Const(" }");
         }
     }
 
@@ -364,10 +444,10 @@ internal static class FilterSkeleton
 
         public void Const(string json) => _constant.Append(json);
 
-        public void Separated(int written)
+        public void Separated(int written, string separator = ",")
         {
             if (written > 0)
-                _constant.Append(',');
+                _constant.Append(separator);
         }
 
         public void Property(string name)
@@ -376,6 +456,13 @@ internal static class FilterSkeleton
             BodyPlan.Json(_constant, name);
             _constant.Append("\":");
         }
+
+        /// <summary>A GraphQL field name, which carries no quotes and so escapes nothing.</summary>
+        /// <remarks>
+        /// Only ever called for a name <see cref="GraphQLTypeFacts.IsGraphQLName"/> has passed,
+        /// which is what makes having nothing to escape true rather than hoped for.
+        /// </remarks>
+        public void Name(string name) => _constant.Append(name).Append(": ");
 
         public void Hole(int index)
         {
@@ -391,6 +478,18 @@ internal static class FilterSkeleton
             _steps.Add(new FilterStep(_constant.ToString(), -1));
             _constant.Clear();
         }
+    }
+
+    /// <summary>Whether every name this clause writes is one a document can carry unquoted.</summary>
+    private static bool Writable(Clause clause)
+    {
+        foreach (string segment in clause.Path)
+        {
+            if (!GraphQLTypeFacts.IsGraphQLName(segment))
+                return false;
+        }
+
+        return GraphQLTypeFacts.IsGraphQLName(clause.Operation);
     }
 
     private static bool StartsWith(IReadOnlyList<string> path, List<string> prefix)
