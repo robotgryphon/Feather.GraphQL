@@ -165,7 +165,7 @@ public class InjectedClientTests
         Assert.Multiple(() =>
         {
             Assert.That(handler.SentBody,
-                Does.Contain(@"query($v0: PersonFilterInput) { people(where: $v0) { name age } }"));
+                Does.Contain(@"query($v0: Int) { people(where: { age: { gt: $v0 } }) { name age } }"));
 
             Assert.That(people[0].Name, Is.EqualTo("Ada"));
         });

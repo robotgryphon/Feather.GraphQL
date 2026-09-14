@@ -127,11 +127,11 @@ public class CompiledQueryShapeTests
         Assert.Multiple(() =>
         {
             Assert.That(handler.SentBody, Does.Contain(
-                "query($v0: PersonFilterInput, $v1: [PersonSortInput!], $v2: Int) "
-                + "{ people(where: $v0, order: $v1, take: $v2) { name age } }"));
+                "query($v0: Int, $v1: [PersonSortInput!], $v2: Int) "
+                + "{ people(where: { age: { gt: $v0 } }, order: $v1, take: $v2) { name age } }"));
 
             Assert.That(handler.SentBody, Does.Contain(
-                @"""variables"":{""v0"":{""age"":{""gt"":30}},""v1"":[{""name"":""ASC""}],""v2"":5}"));
+                @"""variables"":{""v0"":30,""v1"":[{""name"":""ASC""}],""v2"":5}"));
         });
     }
 
@@ -224,7 +224,8 @@ public class CompiledQueryShapeTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(present.SentBody, Does.Contain("{ people(where: $v0, take: $v1) { name } }"));
+            Assert.That(present.SentBody,
+                Does.Contain("{ people(where: { age: { gt: $v0 } }, take: $v1) { name } }"));
             Assert.That(found, Is.True);
             Assert.That(none, Is.False);
         });
@@ -437,9 +438,9 @@ public class CompiledQueryShapeTests
         {
             // The argument the overload named, and the filter written from the model's own field.
             Assert.That(handler.SentBody,
-                Does.Contain(@"query($v0: PersonFilterInput) { people(filter: $v0) { name age } }"));
+                Does.Contain(@"query($v0: String) { people(filter: { city: { eq: $v0 } }) { name age } }"));
 
-            Assert.That(handler.SentBody, Does.Contain(@"""variables"":{""v0"":{""city"":{""eq"":""London""}}}"));
+            Assert.That(handler.SentBody, Does.Contain(@"""variables"":{""v0"":""London""}"));
             Assert.That(people[0].Name, Is.EqualTo("Ada"));
         });
     }
@@ -459,7 +460,7 @@ public class CompiledQueryShapeTests
 
         await InCityAsync(handler.Client(), "London", CancellationToken.None);
 
-        Assert.That(handler.SentBody, Does.Contain("people(where: $v0)"));
+        Assert.That(handler.SentBody, Does.Contain("people(where: { city: { eq: $v0 } })"));
     }
 
     /// <summary>
@@ -472,11 +473,14 @@ public class CompiledQueryShapeTests
 
         await InContinentAsync(compiled.Client(), "London", CancellationToken.None);
 
-        // Frozen from the runtime translation while both paths still existed. When the runtime
-        // path goes, this literal is what is left of the comparison — the bytes the two agreed
-        // on, rather than a guess at what the compiler ought to emit.
+        // A whole body, asserted byte for byte rather than by parts. It was frozen from the
+        // runtime translation while both paths still existed; the filter has since moved out of
+        // a variable and into the document, so the two no longer agree about it and what this
+        // pins is the compiled output itself — nothing else asserts the envelope, the spacing
+        // and the variable numbering all at once.
         const string Agreed =
-            "{\"query\":\"query($v0: PersonFilterInput) { people(filter: $v0) { name age } }\",\"variables\":{\"v0\":{\"city\":{\"eq\":\"London\"}}}}";
+            "{\"query\":\"query($v0: String) { people(filter: { city: { eq: $v0 } }) { name age } }\","
+        + "\"variables\":{\"v0\":\"London\"}}";
 
         Assert.That(compiled.SentBody, Is.EqualTo(Agreed));
     }
@@ -515,7 +519,8 @@ public class CompiledQueryShapeTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(handler.SentBody, Does.Contain("{ people(where: $v0) { items { name age } } }"));
+            Assert.That(handler.SentBody,
+                Does.Contain("{ people(where: { age: { gt: $v0 } }) { items { name age } } }"));
             Assert.That(people[0].Name, Is.EqualTo("Ada"));
         });
     }
@@ -529,7 +534,8 @@ public class CompiledQueryShapeTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(handler.SentBody, Does.Contain("{ people(where: $v0) { totalCount } }"));
+            Assert.That(handler.SentBody,
+                Does.Contain("{ people(where: { age: { gt: $v0 } }) { totalCount } }"));
             Assert.That(count, Is.EqualTo(42));
         });
     }
@@ -541,11 +547,14 @@ public class CompiledQueryShapeTests
 
         await PagedFieldAsync(compiled.Client(), 30, CancellationToken.None);
 
-        // Frozen from the runtime translation while both paths still existed. When the runtime
-        // path goes, this literal is what is left of the comparison — the bytes the two agreed
-        // on, rather than a guess at what the compiler ought to emit.
+        // A whole body, asserted byte for byte rather than by parts. It was frozen from the
+        // runtime translation while both paths still existed; the filter has since moved out of
+        // a variable and into the document, so the two no longer agree about it and what this
+        // pins is the compiled output itself — nothing else asserts the envelope, the spacing
+        // and the variable numbering all at once.
         const string Agreed =
-            "{\"query\":\"query($v0: PersonFilterInput) { people(where: $v0) { items { name age } } }\",\"variables\":{\"v0\":{\"age\":{\"gt\":30}}}}";
+            "{\"query\":\"query($v0: Int) { people(where: { age: { gt: $v0 } }) { items { name age } } }\","
+        + "\"variables\":{\"v0\":30}}";
 
         Assert.That(compiled.SentBody, Is.EqualTo(Agreed));
     }
@@ -571,11 +580,15 @@ public class CompiledQueryShapeTests
         // Through a local, so the entry-point interceptor declines it too: this is the chain
         // translated end to end at run time.
 
-        // Frozen from the runtime translation while both paths still existed. When the runtime
-        // path goes, this literal is what is left of the comparison — the bytes the two agreed
-        // on, rather than a guess at what the compiler ought to emit.
+        // A whole body, asserted byte for byte rather than by parts. It was frozen from the
+        // runtime translation while both paths still existed; the filter has since moved out of
+        // a variable and into the document, so the two no longer agree about it and what this
+        // pins is the compiled output itself — nothing else asserts the envelope, the spacing
+        // and the variable numbering all at once.
         const string Agreed =
-            "{\"query\":\"query($v0: PersonFilterInput, $v1: [PersonSortInput!], $v2: Int) { people(where: $v0, order: $v1, take: $v2) { name age } }\",\"variables\":{\"v0\":{\"age\":{\"gt\":30}},\"v1\":[{\"name\":\"ASC\"}],\"v2\":5}}";
+            "{\"query\":\"query($v0: Int, $v1: [PersonSortInput!], $v2: Int) "
+        + "{ people(where: { age: { gt: $v0 } }, order: $v1, take: $v2) { name age } }\","
+        + "\"variables\":{\"v0\":30,\"v1\":[{\"name\":\"ASC\"}],\"v2\":5}}";
 
         Assert.That(compiled.SentBody, Is.EqualTo(Agreed));
     }
@@ -591,9 +604,11 @@ public class CompiledQueryShapeTests
 #pragma warning disable FGQL012
 #pragma warning restore FGQL012
 
-        // Frozen from the runtime translation while both paths still existed. When the runtime
-        // path goes, this literal is what is left of the comparison — the bytes the two agreed
-        // on, rather than a guess at what the compiler ought to emit.
+        // A whole body, asserted byte for byte rather than by parts. It was frozen from the
+        // runtime translation while both paths still existed; the filter has since moved out of
+        // a variable and into the document, so the two no longer agree about it and what this
+        // pins is the compiled output itself — nothing else asserts the envelope, the spacing
+        // and the variable numbering all at once.
         const string Agreed =
             "{\"query\":\"query($v0: [PersonSortInput!]) { people(order: $v0) { name age } }\",\"variables\":{\"v0\":[{\"age\":\"DESC\"},{\"name\":\"ASC\"}]}}";
 

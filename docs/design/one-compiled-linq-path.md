@@ -234,6 +234,51 @@ that also means nothing independently checks the analyzer's view of a type any m
 15. Done earlier: `Feather.GraphQL.Benchmarks.Interpreted` and `QueryPipeline` were deleted in
     Phase 4.
 
+### Phase 7 — the filter goes into the document — **done**
+
+16. **A compiled filter is written out, not passed whole.** The document said `where: $v0` and put
+    the predicate's whole shape in the variables payload, as an input object the schema names. It
+    now says what it means:
+
+    ```graphql
+    query($v0: String) { people(where: { name: { eq: $v0 } }) { name age } }
+    ```
+
+    The reason is that a server decides what a query costs before it coerces a single variable. A
+    cost or complexity rule reading `where: $v0` sees an opaque input object and has to assume the
+    worst of it; the same rule reading the predicate can price what was actually asked for. The
+    shape was always a compile-time fact — it was simply being written into the wrong half of the
+    request.
+
+    `FilterSkeleton` already walked the predicate to render the payload's JSON. It now renders the
+    GraphQL literal in the same walk, from the same clauses, with the same hole numbering — two
+    spellings of one traversal rather than two traversals that have to agree.
+
+17. **The two properties §5.3 rests on both survive**, which is what made this safe to do:
+
+    - **One document per query shape.** The values are still variables. `Where(p => p.Age > 30)`
+      and `Where(p => p.Age > 99)` still print the same text, so one APQ hash still covers every
+      predicate. What moved into the document was structure, which was already fixed at compile
+      time.
+    - **Injection is still structurally impossible.** Nothing is interpolated into the document at
+      run time; it remains one `u8` literal written when you built. A value reaches the wire the
+      only way it ever did, through `PooledBody.Write`.
+
+18. **What it costs: a variable in a document has to declare its type.** Passed whole, the filter
+    named one type — `PersonFilterInput` — and the server coerced everything under it. Inlined,
+    every value names itself, and what the schema calls a comparison's value is *inferred* from the
+    CLR type. `GraphQLTypeFacts.ScalarName` maps only what HotChocolate's defaults make certain and
+    answers null for anything a schema could reasonably call several things — `char`, `TimeSpan`,
+    `Uri`, `TimeOnly`, the unsigned integers. An unnamed value puts the whole filter back in one
+    variable, silently and per query, because that form needs no name at all.
+
+    The residual risk is a type that maps cleanly to the wrong thing: a `string` against a field
+    the schema types as `ID` declares `$v0: String`, and a variable may not be used where a
+    stricter type is wanted. Nothing at build time can see that, so `GraphQLQueryOptions
+    .InlineFilter` turns the whole thing off per query. It is the first option here that exists
+    for a guess rather than for a fact, which is worth remembering if a schema ever becomes
+    readable at build time.
+
 ---
 
 ## 5. What this costs
@@ -280,3 +325,14 @@ treat any `ClientComparison` timing move under ~8% as noise.
 4. **What is the documented subset?** This plan assumes it gets written down. Someone has to
    enumerate what compiles, and it should be generated from the analyzer's own cases rather than
    maintained by hand.
+5. **Should the ordering go into the document too?** Phase 7 did the filter because that is what a
+   cost rule reads, but `order: $v1` is the same kind of opacity and a strictly easier case: an
+   ordering binds no values at all, so it inlines to `order: [{ name: ASC }]` with no variable and
+   no scalar to name — which would also retire the `{Type}SortInput` guess. The one difference is
+   that a direction is an enum, and an enum is bare in a document where it is quoted in a payload.
+6. **Which CLR types can reach the wire?** Independent of Phase 7 and older than it:
+   `FilterSkeleton` accepts a comparison against any non-enum type, but `PooledBody` has no
+   `Write` for `TimeSpan` or `Uri` — so those emit generated code that does not compile — and
+   `char` binds to `Write(int)` and silently sends a code unit. The accepted set should be one
+   list, checked where the predicate is read, rather than whatever overload resolution happens to
+   find.

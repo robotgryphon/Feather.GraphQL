@@ -36,14 +36,14 @@ public class CompiledQueryTests
         Assert.Multiple(() =>
         {
             Assert.That(run.Source,
-                Does.Contain("query($v0: CountryFilterInput) { countries(where: $v0) { name code } }"));
+                Does.Contain("query($v0: String) { countries(where: { name: { eq: $v0 } }) { name code } }"));
 
             // The value arrives as an argument, so the body is written from it directly — no
             // tree, nothing read back out of one, and no payload type between the two.
             Assert.That(run.Source, Does.Contain("body.Write(name)"));
 
             // Everything around the value was printed by the compiler and is copied, not built.
-            Assert.That(run.Source, Does.Contain("""\"variables\":{\"v0\":{\"name\":{\"eq\":"""));
+            Assert.That(run.Source, Does.Contain("""\"variables\":{\"v0\":"""));
             Assert.That(run.Diagnostics, Is.Empty);
         });
     }
@@ -513,6 +513,126 @@ public class CompiledQueryTests
                 => _client.CreateQueryable<Country>("countries").ToArrayAsync(token);
             """);
 
+    // ---- where the filter goes ----------------------------------------------------------------
+
+    /// <summary>
+    /// A nested path is written out as the objects it nests through.
+    /// </summary>
+    /// <remarks>
+    /// The point of writing the filter into the document rather than passing it whole: a server
+    /// handed <c>where: $v0</c> sees an input object it knows nothing about until it coerces the
+    /// variable, and a cost or complexity analyser that runs before that has to assume the worst
+    /// of it. Written out, the predicate is in the document where such a rule can read it.
+    /// </remarks>
+    [Test]
+    public void A_nested_filter_path_is_written_into_the_document()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country[]> InRegion(HttpClient client, string code, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Where(c => c.Continent.Code == code)
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain(
+                "query($v0: String) "
+                + "{ countries(where: { continent: { code: { eq: $v0 } } }) { name code } }"));
+
+            // Nothing is left around the value: the shape that used to be the variable's is in
+            // the document, so what the body writes is the value and nothing else.
+            Assert.That(run.Source, Does.Contain("""\"variables\":{\"v0\":"""));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>Each comparison gets a variable, named and typed for the value it carries.</summary>
+    [Test]
+    public void Every_comparison_declares_a_variable_of_its_own()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country[]> Both(HttpClient client, string name, string code, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Where(c => c.Name == name && c.Code == code)
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain(
+                "query($v0: String, $v1: String) "
+                + "{ countries(where: { name: { eq: $v0 }, code: { eq: $v1 } }) { name code } }"));
+
+            // Declared in the order the predicate names them, which is the order they are written.
+            Assert.That(run.Source, Does.Contain("body.Write(name)"));
+            Assert.That(run.Source, Does.Contain("body.Write(code)"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// The opt-out puts the whole filter back in one variable of the filter input type.
+    /// </summary>
+    /// <remarks>
+    /// It exists because writing a variable into the document means declaring its type, and what
+    /// the schema calls a comparison's value is inferred rather than known. A schema that types
+    /// the field some other way — <c>ID</c> against a <c>string</c> here — rejects the query, and
+    /// the form below never has to name a scalar at all.
+    /// </remarks>
+    [Test]
+    public void The_opt_out_passes_the_whole_filter_as_one_variable()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country[]> ByName(HttpClient client, string name, CancellationToken token)
+                => client.CreateQueryable<Country>("countries", o => o.InlineFilter = false)
+                    .Where(c => c.Name == name)
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source,
+                Does.Contain("query($v0: CountryFilterInput) { countries(where: $v0) { name code } }"));
+
+            // And the shape comes back with it, since the document no longer carries it.
+            Assert.That(run.Source, Does.Contain("""\"variables\":{\"v0\":{\"name\":{\"eq\":"""));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A value whose schema name is not certain keeps the whole filter in one variable.
+    /// </summary>
+    /// <remarks>
+    /// Not an error and not a decline: the query still compiles and still sends the same filter.
+    /// <c>char</c> stands in for the whole class of types the schema might call any of several
+    /// things, which <see cref="GraphQLTypeFacts.ScalarName"/> answers null for rather than guess.
+    /// </remarks>
+    [Test]
+    public void A_value_with_no_certain_schema_name_keeps_the_whole_filter_in_one_variable()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country[]> ByInitial(HttpClient client, char initial, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Where("where", (InitialFilter f) => f.Initial == initial)
+                    .Select(c => new Country { Name = c.Name, Code = c.Code })
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source,
+                Does.Contain("query($v0: CountryFilterInput) { countries(where: $v0) { name code } }"));
+
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
     /// <summary>Asserts a method was left to the runtime, and said so.</summary>
     private static void Declines(string method)
     {
@@ -546,6 +666,7 @@ public class CompiledQueryTests
             using System.Threading.Tasks;
             using Feather.GraphQL;
             using Feather.GraphQL.Linq;
+            using Feather.GraphQL.Linq.Filtering;
             using Feather.GraphQL.Linq.Providers;
             using Feather.GraphQL.Linq.Query;
             using Feather.GraphQL.Linq.Analyzers.Tests;

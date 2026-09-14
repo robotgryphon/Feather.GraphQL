@@ -3,6 +3,12 @@
 A generic `IQueryable<T>` implementation for GraphQL over HTTP, backed by a Roslyn
 source generator.
 
+> **Historical.** This records the reasoning behind the runtime translator and the precompiled
+> plan, both of which `one-compiled-linq-path.md` removed — there is one compiled path now. Two
+> parts of it describe behaviour that has since changed rather than gone: §7.6 says a filter
+> travels as `where: $v0`, which Phase 7 of that document replaced with the predicate written into
+> the document, and §5.3's reasons for it are unaffected and explained there.
+
 ## 1. Scope
 
 **v1 ships two things: a filter translator, and a request builder that uses it.**
