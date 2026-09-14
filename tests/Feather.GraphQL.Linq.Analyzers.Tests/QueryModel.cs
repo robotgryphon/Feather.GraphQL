@@ -29,8 +29,13 @@ public class InitialFilter
 }
 
 /// <inheritdoc cref="Country"/>
+/// <remarks>
+/// Holds many of something, so a projection has a nested sequence to reach into — and one that
+/// leads back to the queried type, which is the shape a schema usually has.
+/// </remarks>
 public class Continent
 {
     public string Code { get; set; } = "";
     public string Name { get; set; } = "";
+    public Country[] Countries { get; set; } = [];
 }

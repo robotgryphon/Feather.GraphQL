@@ -114,6 +114,17 @@ internal sealed class ChainFacts
     public string SkipArgument = "skip";
     public string LastArgument = "last";
 
+    /// <summary>
+    /// The expression the chain's value comes out of, which is where reading it stopped.
+    /// </summary>
+    /// <remarks>
+    /// Not the outermost call in the fluent sequence: the outermost call this <em>recognised</em>.
+    /// A caller replacing the chain has to know the difference, because whatever is written around
+    /// this expression is code the chain does not stand for and the replacement has to account
+    /// for — by reproducing it, or by declining.
+    /// </remarks>
+    public ExpressionSyntax? End;
+
     public bool IsCount => Result is ResultKind.Count or ResultKind.LongCount;
     public bool HasPaging => HasSkip || HasTake || HasLast;
 
@@ -462,12 +473,16 @@ internal static class QueryChainReader
     {
         // A result operator is itself the end of the chain.
         if (facts.Result != ResultKind.Sequence)
+        {
+            facts.End = chain;
             return true;
+        }
 
         switch (chain.Parent)
         {
             // foreach (var x in chain)
             case ForEachStatementSyntax loop when loop.Expression == chain:
+                facts.End = chain;
                 return true;
 
             case MemberAccessExpressionSyntax access
@@ -480,17 +495,32 @@ internal static class QueryChainReader
 
                 // Materializers read the sequence here and cannot compose further.
                 if (container == "System.Linq.Enumerable")
-                    return consumer.Name is "ToArray" or "ToList" or "ToHashSet" or "ToDictionary";
+                {
+                    if (consumer.Name is not ("ToArray" or "ToList" or "ToHashSet" or "ToDictionary"))
+                        return false;
+
+                    facts.End = call;
+                    return true;
+                }
 
                 // Translating the document is not executing it, and reads no result.
                 if (container == QueryableExtensions)
+                {
+                    facts.End = call;
                     return true;
+                }
 
                 // Half the async terminals are result operators wearing a different name, and
                 // a result operator changes the document — FirstAsync asks for a page of one.
                 // Reading them as plain consumers would print a document missing that argument.
                 if (container == AsyncExtensions)
-                    return AsyncTerminal(consumer, call, facts);
+                {
+                    if (!AsyncTerminal(consumer, call, facts))
+                        return false;
+
+                    facts.End = call;
+                    return true;
+                }
 
                 return false;
             }

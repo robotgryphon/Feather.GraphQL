@@ -267,6 +267,14 @@ supported; the whole chain has to be in one place, where the compiler can read i
 delegate or a reflective call reaches the real body — which throws. `FGQL018` catches this at
 build time.
 
+**A body may await the chain and go on.** `(await chain.ToArrayAsync(token)).Roster()` compiles:
+what you write around the await runs client-side over the rows, so the replacement runs it there
+too. One await, of the chain and nothing else around it — a body that wraps the chain without
+awaiting it (`Task.FromResult(…)`) is `FGQL015`, because that wrapper is code the replacement
+would drop rather than run. The document is still the chain's alone: code after the await reads
+the rows as they arrived, so a nested field the chain never asked for is unset there as anywhere
+else.
+
 **There is no fallback.** A chain the compiler cannot translate used to run the slow way. It now
 fails to build — `FGQL015`, naming the reason. The fix is to change the chain, or to send the
 document yourself with `SendGraphQLQueryAsync` and a dictionary of variables.
@@ -278,6 +286,15 @@ at all.
 **Projections are re-emitted, not matched by name.** Your lambda runs over the rows verbatim, so a
 rename or a computed value works. A nested object you pass through whole — `new Summary(c.Name,
 c.Continent)` — is built as your declared type, not a mirror of it.
+
+**A projection may end in your own code.** A nested `Select`, an extension method, anything that
+runs client-side: the compiler traces the fields the call is handed rather than refusing the
+query for a method it was never going to understand. `c.Continent.Countries.Select(n => n.Name)
+.Joined()` asks for `continent { countries { name } }` and copies the call into the shaping, where
+it runs over the rows that came back. A method handed the objects themselves gets their own
+scalars filled in, since which of them it reads is not visible. What it may not be handed is the
+row — `c.Describe()` on the element is `FGQL015`, because the row carries the element's fields
+without being its type.
 
 **A nested object with no scalar fields cannot be selected on its own** — `FGQL014`. Say what to
 take from it.
