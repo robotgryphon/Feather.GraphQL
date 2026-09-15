@@ -99,10 +99,14 @@ public sealed class GraphQLQueryMethodGenerator : IIncrementalGenerator
             declined = "its document is outside what can be read with certainty — an alias, a "
                 + "fragment, a directive, or more than one root field";
         }
-        else if (ResponseStructWriter.Describe(method.Name, shape.Element, selection, direct: true)
+        else if (ResponseStructWriter.Describe(method.Name, shape.Element, selection, direct: true, out var refusal)
             is not { } described)
         {
-            declined = "its reply holds something with no certain read — a field the returned type "
+            // The reason names the field rather than the three it might have been. There is
+            // nothing to point at — the document is a string in an attribute — so the diagnostic
+            // still lands on the method, which is where the document was written.
+            declined = refusal?.Reason
+                ?? "its reply holds something with no certain read — a field the returned type "
                 + "does not have, a type with no converter of its own, or a collection that is not "
                 + "an array";
         }
@@ -206,8 +210,10 @@ public sealed class GraphQLQueryMethodGenerator : IIncrementalGenerator
     /// from the reply would sometimes guess wrong.
     /// </para>
     /// <para>
-    /// A collection that is not an array is declined: a reader builds the rows into one and
-    /// handing back anything else would need a conversion this does not write.
+    /// This is about what the method hands back, which is not the same question as how a member
+    /// of a row holds many of something — that one is answered by <see cref="CollectionShapes"/>,
+    /// for every spelling it can convert into. Here an array is the only sequence, because the
+    /// reply type is built around one and there is nowhere else the conversion would go.
     /// </para>
     /// </remarks>
     private static (ITypeSymbol? Element, bool Single) Rows(ITypeSymbol type)

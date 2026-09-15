@@ -296,15 +296,94 @@ scalars filled in, since which of them it reads is not visible. What it may not 
 row — `c.Describe()` on the element is `FGQL015`, because the row carries the element's fields
 without being its type.
 
+**A projection may mix the row with everything else.** A constant, a static of somebody else's, a
+value the query method was handed, a lookup of your own indexed by a field: none of it reads a
+row, so none of it asks the server for anything, and all of it is copied into the shaping where it
+goes on meaning what it meant. `new Summary(Labels.Default, c.Name)` asks for `name` and nothing
+besides. What a compiled query cannot reach is a local of the method (there is nowhere to declare
+one — the body is a single expression) or a member private to the declaring type; both are
+`FGQL015`, naming the value.
+
+**A nested lambda may read the row it is nested in.** `c.Permissions.Select(p => p.Code + c.Name)`
+asks for `permissions { code } name`: a projection nests, so more than one row is in scope, and a
+read belongs to whichever one it starts at. The same goes for a sequence of your own filtered by a
+field — `Known.Where(k => k == c.Code)` asks for `code` and leaves the list alone. What is refused
+is a lambda over what a projection produced: in `.Select(n => new Row(n.Name)).Where(r => r.Title
+!= "")`, `r.Title` is not a field of anything the server has, and `FGQL015` says so under `r`.
+
+**A path ends at a field that needs no selection set.** `c.Name.Length`, `c.Founded.Year`,
+`c.Tags[0].Trim()` — what is written after a scalar reads the value the server sent, so it runs
+where the rows are and asks for nothing more. A path may equally run through an index or through a
+client-side call that lands back on a row: `c.Permissions.First().Code` asks for
+`permissions { code }`.
+
+**A selected collection is held the way you declared it.** The reader accumulates a list as it
+reads — the only shape that can be filled without knowing the count first — and then hands it to
+the member. `List<T>` and the interfaces a list already is (`IEnumerable<T>`,
+`IReadOnlyCollection<T>`, `IReadOnlyList<T>`, `ICollection<T>`, `IList<T>`) cost nothing at all:
+the member *is* that list. `T[]` copies. Anything with a public constructor taking a collection —
+`HashSet<T>`, `Collection<T>`, your own — is handed one; anything a collection expression builds,
+`ImmutableArray<T>` and the rest of `System.Collections.Immutable` among them, gets `[.. rows]`.
+
+Prefer `IReadOnlyCollection<T>`: it costs no conversion, and where a row is a generated mirror of
+the payload the member is held as `IReadOnlyList<T>`, which is what a payload row should be. A
+member declared as something mutable is held as that type instead, because your projection was
+written against it and is copied verbatim.
+
+A type none of those reach is `FGQL015`, naming the member and both ways out:
+
+```
+'Tags' is declared as 'Sack', and the reader has no way to make one: it reads the rows into a
+read-only list, and nothing turns one of those into a 'Sack' — neither a public constructor
+taking a collection nor a collection expression. Declare it 'IReadOnlyCollection<string>',
+which the rows satisfy as they are, or give it a constructor taking 'IEnumerable<string>'
+```
+
+This is about members of the queried type, not about the terminal — `ToListAsync` still hands you
+a `List<T>`.
+
+**A refusal points at the part of the chain it is about.** `FGQL015` is reported against the
+expression the compiler stopped at rather than against the method, so the squiggle lands under the
+member, the call or the value that could not be translated, and the message names it. If a
+projection is refused and it is not obvious why, the underlined expression is the answer.
+
 **A nested object with no scalar fields cannot be selected on its own** — `FGQL014`. Say what to
 take from it.
 
 **Only `T[]` and `List<T>` come back as sequences.** There is no `IAsyncEnumerable` terminal;
 streaming was removed rather than half-supported.
 
-**`GroupBy`, `Join`, `SelectMany` and the rest of `IQueryable` are visible but not supported.**
-They compile as far as the type system is concerned and then fail as `FGQL015`. The type keeps
-`IQueryable<T>` for familiarity, and the diagnostics carry the weight instead.
+**`GroupBy`, `Join`, `SelectMany` and the rest of `IQueryable` are visible but not supported *in
+the chain*.** A document asks the server for rows of one field; flattening, grouping or joining
+them is a thing to do to rows, so the operator has no translation rather than a missing one. They
+compile as far as the type system is concerned and then fail as `FGQL015`, naming the operator:
+
+```
+'SelectMany' is not one of the operators a query can be compiled from — a document asks the
+server for rows, and reshaping them is something to do over the rows the query came back with,
+inside the Select or after the await
+```
+
+Which is exactly where they do work. Inside the `Select` they are client-side code like any other,
+and the fields they read are asked for where they land: over a queryable of hemispheres,
+`h.Continents.SelectMany(c => c.Countries).Select(n => n.Name)` asks for
+`continents { countries { name } }` — one path down, with `name` on the countries the selector
+reached rather than on the continents it ran over. After the `await` they run over the rows that
+came back: `(await …ToArrayAsync(token)).SelectMany(x => x).ToArray()`.
+
+**The document is the path your projection walks, and nothing more.** If it walks back up to a
+field it already had, so does the document: over a queryable of countries,
+`c.Continent.Countries.Select(n => n.Name)` asks for `countries { continent { countries { name }
+} }`, because that is what it reads — the continent of each country, and then that continent's
+countries. It is a second trip through the resolvers, and the fix is to query what you actually
+want: `CreateQueryable<Continent>("continents").Select(c => c.Countries.Select(n => n.Name))` asks
+for `continents { countries { name } }`. Nothing collapses the round trip for you: a back-reference
+resolving to the node you came from is a thing your schema may happen to do, not a thing GraphQL
+promises, and your projection still reads through it.
+
+A grouping's `Key` is not a field — it is the key selector's value, computed where the rows are —
+so `GroupBy(n => n.Code).Select(g => g.Key)` asks for `code` and nothing else. What the grouping
+holds is still rows, so `g.First().Name` asks for `name` too.
 
 **Declared queries are stricter than chains.** `[GraphQLQuery("query { … }")]` on a partial method
 implements it from the document. Aliases, fragments, directives and multiple root fields are not

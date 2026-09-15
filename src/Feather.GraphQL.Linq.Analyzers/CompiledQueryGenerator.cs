@@ -51,6 +51,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         string Name,
         Location? Where,
         string? Declined,
+        Location? DeclinedAt,
         string ReturnType,
         string ResultType,
         string Result,
@@ -149,9 +150,15 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         string key = method.OriginalDefinition.ToDisplayString(_key);
         var where = declaration.Identifier.GetLocation();
 
-        Compiled Declined(string reason)
-            => new(key, method.Name, where, reason, "", "", "", Reader.Root, ReplyShape.List, "", "", null, "", [], [],
-                null, "", "", "", "", null, false, null, null);
+        // A decline names the part of the chain it is about wherever there is one to name: the
+        // diagnostic is reported against that syntax rather than against the method's name, which
+        // is what makes a refusal something to go and look at rather than something to puzzle out.
+        Compiled Declined(string reason, Location? at = null)
+            => new(key, method.Name, where, reason, at, "", "", "", Reader.Root, ReplyShape.List, "", "", null, "",
+                [], [], null, "", "", "", "", null, false, null, null);
+
+        Compiled Refused(Refusal? refusal, string otherwise)
+            => Declined(refusal?.Reason ?? otherwise, refusal?.Where);
 
         if (method.IsGenericMethod || method.PartialImplementationPart is not null)
             return Declined("a compiled query is a plain method, with the chain as its body");
@@ -196,10 +203,11 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
                 + "as a parameter, or hold it on the declaring type");
         }
 
-        var completions = QueryChainReader.Read(entry, entryPoint, context.SemanticModel, token);
+        var unread = new Refusals();
+        var completions = QueryChainReader.Read(entry, entryPoint, context.SemanticModel, token, unread);
 
         if (completions is not { Count: 1 })
-            return Declined("its chain could not be read as one query ending in this method");
+            return Refused(unread.First, "its chain could not be read as one query ending in this method");
 
         var facts = completions[0];
 
@@ -226,11 +234,13 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
 
         if (shapes)
         {
-            if (Shaper(facts.Projection!, method, context.SemanticModel, token) is not { } written)
-                return Declined(
+            if (Shaper(facts.Projection!, method, context.SemanticModel, token, out var refused) is not { } written)
+            {
+                return Refused(refused,
                     "its Select reads something the replacement cannot — a local it captured, a "
                     + "member private to the declaring type, or the row itself where the queried "
                     + "type is wanted");
+            }
 
             shaping = written;
             shaped = written.Type;
@@ -272,10 +282,13 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         // reason: it is already C#, and it runs where the answer is.
         if (awaits is not null)
         {
-            if (Around(body, awaits, result, method, context.SemanticModel, token) is not { } written)
-                return Declined(
+            if (Around(body, awaits, result, method, context.SemanticModel, token, out var unreachable)
+                is not { } written)
+            {
+                return Refused(unreachable,
                     "what its body does with the rows reads something the replacement cannot — a "
                     + "local it captured, or a member private to the declaring type");
+            }
 
             result = written;
         }
@@ -311,20 +324,28 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
             // reads it — so a count needs no row model and never falls back.
             generated = true;
         }
-        else if (SelectionSetWriter.Build(facts.ElementType, facts.Projection, context.SemanticModel, token)
-            is { } selection)
+        else
         {
+            // Two failures wearing one message until now, and they are not the same fault: a
+            // selection set that could not be derived is about the projection, and a reply that
+            // could not be modelled is about the types the fields it named are declared as.
+            var selection = SelectionSetWriter.Build(
+                facts.ElementType, facts.Projection, context.SemanticModel, token, out var untraceable);
+
+            if (selection is null)
+                return Refused(untraceable, "its Select could not be traced to the fields it asks for");
+
             reply = ResponseStructWriter.Describe(
-                method.Name, facts.ElementType, selection, direct: shaping is null);
+                method.Name, facts.ElementType, selection, direct: shaping is null, out var unreadable);
 
-            generated = reply is not null;
-        }
+            if (reply is null)
+            {
+                return Refused(unreadable,
+                    "its reply could not be modelled — a field the element does not have, or a type "
+                    + "with no certain read");
+            }
 
-        if (!generated)
-        {
-            return Declined(
-                "its reply could not be modelled — a field the element does not have, a type with "
-                + "no certain read, or a collection that is not an array");
+            generated = true;
         }
 
         var bindings = new List<DocumentBinding>();
@@ -404,7 +425,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
                 cancellation = parameter.Name;
         }
 
-        return new Compiled(key, method.Name, where, null, returnType, resultType, result, reader,
+        return new Compiled(key, method.Name, where, null, null, returnType, resultType, result, reader,
             shape, string.Join(", ", parameters), client, cancellation, document, payload.ToImmutable(), holes,
             shaping?.Body, shaping?.Parameter ?? "", Allocation(shaped, "source.Length"),
             element.ToDisplayString(_signature), Usings(declaration, method), reply, generated,
@@ -661,21 +682,45 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         LambdaExpressionSyntax projection,
         IMethodSymbol method,
         SemanticModel model,
-        CancellationToken token)
+        CancellationToken token,
+        out Refusal? refusal)
     {
+        refusal = null;
+
         if (projection.Body is not ExpressionSyntax body
             || model.GetSymbolInfo(projection, token).Symbol is not IMethodSymbol { Parameters.Length: 1 } lambda
             || model.GetTypeInfo(body, token).Type is not { } produced
-            || produced.TypeKind == TypeKind.Error
-            || produced.IsAnonymousType)
+            || produced.TypeKind == TypeKind.Error)
             return null;
 
-        if (!Copies(body, method, model, token, row: lambda.Parameters[0], excluding: null))
-            return null;
+        // An anonymous type is a name only its own file has. The rows are built in a file of the
+        // generator's, where there is nothing to call it — which is worth saying, because the
+        // projection is otherwise perfectly ordinary.
+        if (produced.IsAnonymousType)
+        {
+            refusal = new Refusal(
+                "its Select projects into an anonymous type, which cannot be named in the file the "
+                + "compiled call is written to — project into a record or a class instead",
+                body.GetLocation());
 
-        return Written(body, null, "", model, token) is { } written
-            ? new Shaping(produced, lambda.Parameters[0].Name, written)
-            : null;
+            return null;
+        }
+
+        var refusals = new Refusals();
+
+        if (!Copies(body, method, model, token, row: lambda.Parameters[0], excluding: null, refusals))
+        {
+            refusal = refusals.First;
+            return null;
+        }
+
+        if (Written(body, null, "", model, token, refusals) is not { } written)
+        {
+            refusal = refusals.First;
+            return null;
+        }
+
+        return new Shaping(produced, lambda.Parameters[0].Name, written);
     }
 
     /// <summary>
@@ -700,10 +745,19 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         string rows,
         IMethodSymbol method,
         SemanticModel model,
-        CancellationToken token)
-        => Copies(body, method, model, token, row: null, excluding: awaited)
-            ? Written(body, awaited, rows, model, token)
+        CancellationToken token,
+        out Refusal? refusal)
+    {
+        var refusals = new Refusals();
+
+        string? written = Copies(body, method, model, token, row: null, excluding: awaited, refusals)
+            ? Written(body, awaited, rows, model, token, refusals)
             : null;
+
+        refusal = written is null ? refusals.First : null;
+
+        return written;
+    }
 
     /// <summary>
     /// Whether an expression can be copied into the replacement and mean there what it means here.
@@ -728,7 +782,8 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         SemanticModel model,
         CancellationToken token,
         IParameterSymbol? row,
-        SyntaxNode? excluding)
+        SyntaxNode? excluding,
+        Refusals refusals)
     {
         // Everything the body may name: the projection's own parameter, any a nested lambda
         // introduces, and the parameters of the method being compiled — which the replacement has
@@ -761,7 +816,12 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
                 && node is IdentifierNameSyntax mention
                 && SymbolEqualityComparer.Default.Equals(symbol, row)
                 && !ReadsAField(mention, model, token))
-                return false;
+            {
+                return refusals.No(mention,
+                    $"'{row.Name}' is used here as a '{row.Type.Name}' rather than read through — the rows "
+                    + "the projection runs over carry the fields the query asked for and are not that "
+                    + "type, so only a field of it can be named here");
+            }
 
             switch (symbol)
             {
@@ -774,20 +834,37 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
                 // A value from the enclosing scope, which the call site does not have.
                 case ILocalSymbol:
                 case IRangeVariableSymbol:
-                    return false;
+                    return refusals.No(node,
+                        $"'{symbol.Name}' is a local of this method, and the compiled call is written "
+                        + "somewhere that cannot see it — take its value as a parameter instead");
 
                 case IParameterSymbol parameter when !available.Contains(parameter):
-                    return false;
+                    return refusals.No(node,
+                        $"'{parameter.Name}' comes from outside the method, and the compiled call has only "
+                        + "the method's own parameters in scope");
 
                 // A private helper is not reachable from the file the replacement lives in.
                 case IMethodSymbol or IPropertySymbol or IFieldSymbol or IEventSymbol
                     when !model.Compilation.IsSymbolAccessibleWithin(symbol, model.Compilation.Assembly):
-                    return false;
+                    return refusals.No(node,
+                        $"'{symbol.Name}' is {Reach(symbol.DeclaredAccessibility)} to "
+                        + $"'{symbol.ContainingType?.Name}', and the compiled call is written in a file of "
+                        + "its own — it can name only what is reachable from anywhere in this assembly");
             }
         }
 
         return true;
     }
+
+    /// <summary>How far a member reaches, as a message says it.</summary>
+    private static string Reach(Accessibility accessibility)
+        => accessibility switch
+        {
+            Accessibility.ProtectedAndInternal => "private protected",
+            Accessibility.ProtectedOrInternal => "protected internal",
+            Accessibility.NotApplicable => "not visible",
+            _ => accessibility.ToString().ToLowerInvariant()
+        };
 
     /// <summary>The expression as the generated file spells it, or null when it cannot be.</summary>
     private static string? Written(
@@ -795,12 +872,18 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         AwaitExpressionSyntax? awaited,
         string rows,
         SemanticModel model,
-        CancellationToken token)
+        CancellationToken token,
+        Refusals refusals)
     {
-        var qualifier = new Qualifier(model, token, awaited, rows);
+        var qualifier = new Qualifier(refusals, model, token, awaited, rows);
         var written = qualifier.Visit(body);
 
-        return qualifier.Declined || written is null ? null : written.ToFullString().Trim();
+        if (!qualifier.Declined && written is not null)
+            return written.ToFullString().Trim();
+
+        refusals.Note(body, "it holds a name that cannot be written out where the compiled call lands");
+
+        return null;
     }
 
     /// <summary>
@@ -899,12 +982,19 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
     /// </para>
     /// </remarks>
     private sealed class Qualifier(
+        Refusals refusals,
         SemanticModel model,
         CancellationToken token,
         AwaitExpressionSyntax? awaited = null,
         string rows = "") : CSharpSyntaxRewriter
     {
-        /// <summary>Set when a name binds to a type that cannot be written out.</summary>
+        /// <summary>
+        /// Set when a name binds to something that cannot be written out.
+        /// </summary>
+        /// <remarks>
+        /// Set beside a note of what the name was and why it could not be written, so that the
+        /// decline this ends in can point at it rather than at the method.
+        /// </remarks>
         public bool Declined { get; private set; }
 
         /// <summary>
@@ -950,6 +1040,10 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
             {
                 if (type.TypeKind == TypeKind.Error || type.IsAnonymousType)
                 {
+                    refusals.Note(node,
+                        $"'{node}' is a type with no name the compiled call could write out — an "
+                        + "anonymous type, or one that does not compile");
+
                     Declined = true;
                     return node;
                 }
@@ -965,6 +1059,11 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
             // inside of.
             if (!symbol.IsStatic)
             {
+                refusals.Note(node,
+                    $"'{symbol.Name}' is an instance member of '{owner.Name}', reached here through the "
+                    + "`this` this method has — the compiled call is a static method somewhere else, with "
+                    + "no instance to read it off");
+
                 Declined = true;
                 return node;
             }
@@ -976,6 +1075,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
 
             if (written is null)
             {
+                refusals.Note(node, $"'{node}' could not be written out with the type that declares it");
                 Declined = true;
                 return node;
             }
@@ -1323,7 +1423,7 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
         foreach (var query in compiled.Distinct().Where(x => x.Declined is not null))
         {
             context.ReportDiagnostic(Diagnostic.Create(
-                GraphQLDiagnostics.NotCompiled, query.Where, query.Name, query.Declined));
+                GraphQLDiagnostics.NotCompiled, query.DeclinedAt ?? query.Where, query.Name, query.Declined));
         }
 
         var sites = calls.Distinct()

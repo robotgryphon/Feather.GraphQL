@@ -432,6 +432,148 @@ every operator must be one it knows, and — the load-bearing rule — the chain
 document printed without that `First()` is a *wrong* document, not a missing one. So
 finishing means a result operator, a materializing call, or a `foreach`.
 
+**Which rows a lambda ranges over, decided by its type.** A projection's inner lambdas
+were bound one at a time and by position: the parameter of the lambda, over whatever the
+receiver held. That answers most operators and three of them badly.
+
+`Zip` and `SelectMany`'s result selector take two parameters, and a lambda with two
+parameters had no parameter this could name — so both of its parameters were names in no
+scope, and a name in no scope had just been taught to mean "a value of the caller's own,
+which asks the server for nothing". `(a, b) => a.Name` asked for nothing. The document went
+out without `name`, the generated code compiled because the row was the caller's own type,
+and `Name` came back null. Silent wrong data, which is the one outcome worse than a wrong
+document.
+
+So every parameter is bound, and which rows each one ranges over is decided by its *type*
+rather than its position: it is the rows the receiver holds, or the rows a flattening
+selector reached, or — where it is neither and not a scalar — something whose members
+cannot be placed at all. One rule serves `Zip`, `SelectMany`, `GroupBy` and the indexed
+overloads without knowing any of them by name. A lambda whose parameters cannot be read one
+for one against the delegate it binds to joins the scope unnamed, and an unnamed parameter
+anywhere makes every name in that projection something to understand outright rather than
+something to pass over — which is the conservatism that was there before constants were
+allowed in, put back where it belongs.
+
+**`SelectMany` hands back what its selector reached.** The operators after a flattening one
+name fields of the flattened rows, which live somewhere else in the document than the rows
+that were flattened. Following the selector to where it landed is what keeps
+`h.Continents.SelectMany(c => c.Countries).Select(n => n.Name)` asking for
+`continents { countries { name } }` rather than for `name` one level too high and every
+scalar of the right level besides — and what lets it ask for nothing extra when the
+flattened member is a list of scalars, which needs no selection set at all.
+
+**What it does not do is shorten the path.** A projection that walks back up to a field it
+already had gets a document that does too: `c.Continent.Countries.Select(n => n.Name)` over
+a queryable of countries asks for `countries { continent { countries { name } } }`, which is
+a second trip through the resolvers for rows the first trip fetched. That is what the
+expression reads, and it reads it whether or not `SelectMany` is in it — the same document
+comes out of the plain nested `Select`. Collapsing it would mean deciding that a country's
+continent is the continent the country came from, which is a thing a schema may happen to do
+and not a thing GraphQL promises; and the projection is copied verbatim, so the row has to
+carry the path the projection reads through. The document is the path the projection walks.
+Walking a shorter one is the author's to write, and querying the field they actually want —
+`continents { countries { name } }` — is how.
+
+**A grouping's `Key` is not a field.** `IGrouping<K, T>` holds rows of the graph without
+being one, so a lambda over it ranges over those rows and `g.First().Name` is a field read
+like any other. `Key` is not: it is the key selector's own value, computed where the rows
+are. It is also a property, which is all the walk used to ask — so `key` was written into
+the document, and the reply then could not be modelled because the element has no such
+member. The question is now whether the type the node stands for actually *has* the
+property, as its own or as something it is, which `IGrouping` fails and every real field
+passes.
+
+**How many of something reaches the member that asked for it.** A generated reader
+accumulates a list as it reads one, because that is the only shape that can be filled
+without knowing the count in advance. For a long time the only member it would fill was
+`T[]`, and every other way of spelling "many of these" was a decline — which is a strange
+thing to be told about a model the serializer this replaced read without complaining, and
+is what a schema's own `[PermissionEdge!]` most naturally maps onto.
+
+So the accumulated list is converted, and the set of conversions is deliberately the set
+that can be recognised with certainty rather than the set that could be guessed:
+
+| declared as | how it is filled |
+| --- | --- |
+| `List<T>`, `IEnumerable<T>`, `ICollection<T>`, `IList<T>`, `IReadOnlyCollection<T>`, `IReadOnlyList<T>` | the accumulated list itself, no copy |
+| `T[]` | `ToArray()` |
+| a type with a public constructor taking a collection | `new Target(rows)` |
+| a type a collection expression builds — `[CollectionBuilder]`, or enumerable with a parameterless constructor and an `Add` | `[.. rows]` |
+| anything else | `FGQL015`, naming the member |
+
+A conversion guessed wrong here is a reply read into the wrong shape rather than a build
+that fails, which is why the last row is a refusal and why it says both things that would
+work: declare `IReadOnlyCollection<T>`, or give the type a constructor taking one.
+
+**What a row holds, and why it is not always read-only.** A row of this file's own is a
+payload rather than a model, and nothing should be able to add to it — so where the member
+it mirrors is declared as something a read-only list already is, the row holds
+`IReadOnlyList<T>` and the rows reach it uncopied. Where the caller declared a `List`, it
+holds a `List`. Not for want of tidiness: the projection is the caller's own code, copied
+verbatim, and was written against the type they declared — `new Perms(c.Name,
+c.Permissions)` compiles where they wrote it and has to go on compiling where it lands.
+Narrowing the member to be tidy would be a compile error in code nobody wrote, which is the
+failure mode this whole file is arranged to avoid. Declaring `IReadOnlyCollection<T>` is
+what buys the read-only row, and costs nothing else.
+
+**A projection has rows in scope, not a row.** The walk that derives a selection set used
+to carry one lambda parameter: the projection's own, replaced by the inner one whenever it
+stepped into a nested lambda. That is right until a projection nests and reads outwards,
+which `c.Permissions.Select(p => p.Code + c.Name)` does. `c.Name` named nothing the
+innermost parameter had, so it was skipped as an expression that reads no row — the
+document went out without `name`, and the shaping that came back read `c.Name` off a row
+struct that had no such member. A wrong document and generated code that does not compile,
+from a projection that is ordinary C#.
+
+So the walk carries a **scope**: one entry per lambda parameter between the projection and
+the expression being read, each with the node its members are collected onto. A read
+belongs to whichever row it starts at, found by walking the scope from the innermost out —
+which also gets shadowing right for free, since the innermost match is the one C# binds to.
+
+A name in none of them is not a row. That is the other half: it is a constant, a static of
+somebody else's, a value the method was handed, and it asks the server for nothing at all.
+Before the scope existed there was nowhere to put that answer, so a member named on its own
+that did not read the row was refused — which made a projection mixing in outside data a
+chain that could not be compiled, for no reason anybody could act on.
+
+Two more things the scope makes decidable, both of which were silently wrong rather than
+refused. A node knows which type its fields belong to, so a lambda over what a projection
+produced — `.Select(n => n.Name).Where(s => s.Length > 2)` — is told from one still ranging
+over the member's rows, and its members are not placed under a node they are not fields of.
+And a path ends at a field that needs no selection set: `c.Name.Length` traced through
+`Length` because `Length` is a property, and asked the server for `name { length }`.
+
+**What the harness checks.** Every compiled-query case now adds what the generator emitted
+back to the compilation and asserts it compiles. Reading the generated text cannot catch a
+document missing a field the shaping goes on to read — the text looks exactly like the
+projection that was written — and that is the failure mode this file can produce that costs
+the most to find.
+
+**A decline names what it refused, and points at it.** A refusal used to be a sentence
+about a whole method — "its reply could not be modelled — a field the element does not
+have, a type with no certain read, or a collection that is not an array" — reported
+against the method's name. Three faults wearing one message, and the author left to work
+out which of them it was and where. (The third of them is no longer a fault at all, which
+is the sort of thing a message naming what it refused makes visible.) That is affordable while a decline costs an
+optimisation and a chain still runs the slow way; it is not affordable now that a decline
+costs the query.
+
+So every walk that can refuse carries a `Refusals`, and records the expression it stopped
+at with a reason naming the thing that is wrong: `'Span' is a 'TimeSpan', which the
+generated reader has no read for that is certainly right`. `FGQL015` is
+reported against that expression rather than against the method, which puts the squiggle
+under the member — the same place EF Core puts one when a call has no translation. The
+first refusal recorded wins, because a walk unwinds through the frames that called it and
+the innermost one is the frame that knows what is actually wrong; the ones above it know
+only which expression it was part of.
+
+Three faults become three messages here, because they are fixed three different ways: a
+selection set that could not be traced is about the projection, a reply that could not be
+modelled is about how the fields it named are *declared*, and a projection that could not
+be copied is about what it reads from outside the row. Where there is no syntax to point
+at — a declared query's document is a string in an attribute — the reason is still worth
+having, and the method's own name is where it lands.
+
 **Where it ends is also what bounds the body.** A `[GraphQLQuery]` method's body is one
 expression, and for a long time that was taken to mean the body *is* the chain — which it
 only looks like. `Task.FromResult(chain.ToArrayAsync(t).Result)` is one expression too, and

@@ -219,6 +219,83 @@ public class ResponseStructTests
         return builder.ToString();
     }
 
+    // ---- how many of something reaches the member that asked for it -------------------------
+
+    /// <summary>
+    /// A member declared as a list is the list the reader accumulated.
+    /// </summary>
+    /// <remarks>
+    /// Reading fills a list because that is the only shape that can be filled without knowing the
+    /// count first. Where the member is declared as one, the two are the same object and there is
+    /// no conversion at all — which is the reason to accumulate into a list rather than anything
+    /// else.
+    /// </remarks>
+    [Test]
+    public void A_list_member_is_the_list_that_was_read()
+    {
+        string source = Emit("r => new { r.Sites }", "Region", direct: true);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(source, Does.Contain("_sitesItems = new global::System.Collections.Generic.List<"));
+            Assert.That(source, Does.Contain("_sites = _sitesItems;"));
+            Assert.That(source, Does.Not.Contain("_sites = _sitesItems.ToArray()"));
+        });
+    }
+
+    /// <summary>An array member still gets an array, which is a copy of the list.</summary>
+    [Test]
+    public void An_array_member_is_copied_out_of_the_list()
+    {
+        string source = Emit("r => new { r.Tags }", "Region", direct: true);
+
+        Assert.That(source, Does.Contain("_tags = _tagsItems.ToArray();"));
+    }
+
+    /// <summary>
+    /// A type that says how a collection expression builds one gets a collection expression.
+    /// </summary>
+    /// <remarks>
+    /// <c>ImmutableArray</c> carries a <c>[CollectionBuilder]</c>, which is the type answering the
+    /// only question that matters here — how one of it is made — in the form C# already knows how
+    /// to ask.
+    /// </remarks>
+    [Test]
+    public void A_type_a_collection_expression_builds_gets_one()
+    {
+        string source = Emit("r => new { r.Borders }", "Region", direct: true);
+
+        Assert.That(source, Does.Contain("_borders = [.. _bordersItems];"));
+    }
+
+    /// <summary>A type with a constructor taking a collection is handed the list.</summary>
+    [Test]
+    public void A_type_with_a_constructor_taking_a_collection_is_handed_the_list()
+    {
+        string source = Emit("r => new { r.Ledger }", "Region", direct: true);
+
+        Assert.That(source, Does.Contain(
+            "_ledger = new global::Feather.GraphQL.Linq.Analyzers.Tests.Ledger(_ledgerItems);"));
+    }
+
+    /// <summary>
+    /// A row of this file's own holds a read-only list where the member it mirrors is declared as
+    /// something one already is.
+    /// </summary>
+    [Test]
+    public void A_mirrored_read_only_member_is_held_read_only()
+    {
+        string source = Emit("r => new { r.Neighbours }", "Region", direct: false);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(source, Does.Contain(
+                "public readonly global::System.Collections.Generic.IReadOnlyList<"));
+
+            Assert.That(source, Does.Contain("_neighbours = _neighboursItems;"));
+        });
+    }
+
     // ---- converters the model declared ------------------------------------------------------
 
     /// <summary>
@@ -381,6 +458,18 @@ public class Region
     /// <summary>A list of scalars, which is a leaf on the wire but still an array.</summary>
     public string[] Tags { get; set; } = [];
 
+    /// <summary>Many of something, held the way most models hold many of something.</summary>
+    public System.Collections.Generic.List<Country> Sites { get; set; } = [];
+
+    /// <summary>Many of something the caller says nothing may be added to.</summary>
+    public System.Collections.Generic.IReadOnlyCollection<Country> Neighbours { get; set; } = [];
+
+    /// <summary>Many of something only a collection expression builds.</summary>
+    public System.Collections.Immutable.ImmutableArray<Country> Borders { get; set; }
+
+    /// <summary>Many of something with a constructor that takes them.</summary>
+    public Ledger Ledger { get; set; } = new([]);
+
     /// <summary>A member whose model says how it is written, and so how it is read.</summary>
     [System.Text.Json.Serialization.JsonConverter(typeof(EpochConverter))]
     public DateTime Founded { get; set; }
@@ -396,6 +485,19 @@ public class Region
     /// <summary>An enum by name, which takes a factory to read.</summary>
     [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter))]
     public Climate Climate { get; set; }
+}
+
+/// <summary>
+/// A collection of the caller's own, built the way most of them are: by handing it the values.
+/// </summary>
+public sealed class Ledger(System.Collections.Generic.IEnumerable<string> entries)
+    : System.Collections.Generic.IEnumerable<string>
+{
+    private readonly System.Collections.Generic.List<string> _entries = [.. entries];
+
+    public System.Collections.Generic.IEnumerator<string> GetEnumerator() => _entries.GetEnumerator();
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 }
 
 /// <summary>Whatever this means on the wire, the model is the one that says so.</summary>
