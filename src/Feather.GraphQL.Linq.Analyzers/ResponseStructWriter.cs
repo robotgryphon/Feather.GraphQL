@@ -379,7 +379,8 @@ internal static class ResponseStructWriter
         => type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
 
     /// <summary>
-    /// The converter a model declared for a member, on the member or on its type.
+    /// The converter a model declared for a member, on the member or on its type, named the way
+    /// generated code has to spell it.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -389,54 +390,17 @@ internal static class ResponseStructWriter
     /// reader can agree with the first about it.
     /// </para>
     /// <para>
-    /// A converter registered globally instead — on the options rather than on the model — cannot
-    /// be seen from here, and keeping those in step with what a generated reader expects is the
-    /// consumer's to do.
+    /// Which converters count is <see cref="GraphQLTypeFacts.Converter(IPropertySymbol)"/>'s to
+    /// say, not this file's, because the same answer decides whether the document asks for that
+    /// member as one field or descends into its properties. Two copies of the rule would be two
+    /// halves of one query free to disagree.
     /// </para>
     /// </remarks>
     private static (string? Converter, bool Factory) Converter(IPropertySymbol property)
     {
-        var declared = Attribute(property.GetAttributes())
-            ?? Attribute(GraphQLTypeFacts.UnwrapNullable(property.Type).GetAttributes());
+        var (converter, factory) = GraphQLTypeFacts.Converter(property);
 
-        if (declared is not INamedTypeSymbol converter)
-            return (null, false);
-
-        // A converter has to be one this can build: a factory is asked for one, and anything
-        // without a constructor taking nothing cannot be had at all.
-        if (!converter.InstanceConstructors.Any(x => x.Parameters.Length == 0
-            && x.DeclaredAccessibility == Accessibility.Public))
-            return (null, false);
-
-        for (var type = converter; type is not null; type = type.BaseType)
-        {
-            switch (type.ToDisplayString())
-            {
-                case "System.Text.Json.Serialization.JsonConverterFactory":
-                    return (converter.ToDisplayString(_qualified), true);
-
-                case string name when name.StartsWith(
-                    "System.Text.Json.Serialization.JsonConverter<", StringComparison.Ordinal):
-                    return (converter.ToDisplayString(_qualified), false);
-            }
-        }
-
-        return (null, false);
-    }
-
-    /// <summary>The type named by a <c>[JsonConverter]</c> among these attributes, if any.</summary>
-    private static ITypeSymbol? Attribute(System.Collections.Immutable.ImmutableArray<AttributeData> attributes)
-    {
-        foreach (var attribute in attributes)
-        {
-            if (attribute.AttributeClass?.ToDisplayString()
-                    == "System.Text.Json.Serialization.JsonConverterAttribute"
-                && attribute.ConstructorArguments.Length == 1
-                && attribute.ConstructorArguments[0].Value is ITypeSymbol converter)
-                return converter;
-        }
-
-        return null;
+        return (converter?.ToDisplayString(_qualified), factory);
     }
 
     /// <summary>Reading one value through the converter held for that member.</summary>

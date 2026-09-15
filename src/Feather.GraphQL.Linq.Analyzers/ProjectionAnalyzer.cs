@@ -172,7 +172,14 @@ public sealed class ProjectionAnalyzer : DiagnosticAnalyzer
         if (context.SemanticModel.GetTypeInfo(member, context.CancellationToken).Type is not { } memberType)
             return;
 
-        if (GraphQLTypeFacts.IsLeaf(memberType))
+        // Asked of the member where the member is known, since a converter may sit on it rather
+        // than on its type — and a value the model takes whole has nothing to project.
+        bool leaf = context.SemanticModel.GetSymbolInfo(member, context.CancellationToken).Symbol
+            is IPropertySymbol property
+            ? GraphQLTypeFacts.IsLeaf(property)
+            : GraphQLTypeFacts.IsLeaf(memberType);
+
+        if (leaf)
             return;
 
         var target = GraphQLTypeFacts.Unwrap(memberType);
@@ -181,7 +188,7 @@ public sealed class ProjectionAnalyzer : DiagnosticAnalyzer
 
         foreach (var field in GraphQLTypeFacts.Fields(target))
         {
-            if (GraphQLTypeFacts.IsLeaf(field.Type))
+            if (GraphQLTypeFacts.IsLeaf(field))
                 return;
         }
 

@@ -139,6 +139,14 @@ Rules:
 - `[JsonIgnore]` means "not a GraphQL field". Referencing an ignored property from a
   query is `FGQL005`. Without this opt-out the diagnostic could never fire, since the
   symbol-name fallback makes every property mappable.
+- `[JsonConverter]`, on a type or on a member, means "this is one value". It is not shaped
+  by its properties, so it is a leaf: the document asks for the field alone and a path
+  through it ends there, the same way a path ends at a `string`. This has to be the rule
+  because the generated reader already reads such a member through its converter rather
+  than field by field — a document asking `money { amount }` for a field the reader takes
+  whole is the two halves of one query disagreeing, and the server is what says so. Which
+  converters count is `GraphQLTypeFacts.Converter`, read by both halves so there is only
+  one answer to give.
 
 Reusing `[JsonPropertyName]` means the GraphQL field name and the JSON response key are
 the same string by construction, which is exactly what makes materialization free — the

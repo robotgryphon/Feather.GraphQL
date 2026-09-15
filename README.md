@@ -311,9 +311,17 @@ field — `Known.Where(k => k == c.Code)` asks for `code` and leaves the list al
 is a lambda over what a projection produced: in `.Select(n => new Row(n.Name)).Where(r => r.Title
 != "")`, `r.Title` is not a field of anything the server has, and `FGQL015` says so under `r`.
 
+**`[JsonConverter]` makes a type a scalar.** A type your model hands to a converter — on the type
+or on the member — arrives as one value, so it is asked for as one field: `[JsonConverter(typeof(
+MoneyConverter))] class Money` under `c.Total` asks for `total`, not `total { amount currency }`.
+The reader has always read such a member through its converter whatever the query said beneath it;
+the document now agrees with it. Whether the converter writes a string, a number or an object
+cannot be seen from here, so the model declaring one is taken at its word — if you want the
+properties selected individually, do not put a converter over them.
+
 **A path ends at a field that needs no selection set.** `c.Name.Length`, `c.Founded.Year`,
-`c.Tags[0].Trim()` — what is written after a scalar reads the value the server sent, so it runs
-where the rows are and asks for nothing more. A path may equally run through an index or through a
+`c.Tags[0].Trim()`, `c.Total.Amount` — what is written after a scalar reads the value the server
+sent, so it runs where the rows are and asks for nothing more. A path may equally run through an index or through a
 client-side call that lands back on a row: `c.Permissions.First().Code` asks for
 `permissions { code }`.
 

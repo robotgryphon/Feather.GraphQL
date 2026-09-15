@@ -64,6 +64,10 @@ internal static class GraphQLTypeFacts
         if (IsPrimitive(underlying) || underlying.TypeKind == TypeKind.Enum)
             return true;
 
+        // A type whose model handed it to a converter is one value, whatever its properties say.
+        if (Converter(underlying).Converter is not null)
+            return true;
+
         string name = underlying.ToDisplayString(_metadataNames);
 
         foreach (string scalar in _scalarTypes)
@@ -199,8 +203,23 @@ internal static class GraphQLTypeFacts
     {
         var underlying = UnwrapNullable(type);
 
+        // Asked before the collection is unwrapped: a converter on a type that happens to be
+        // enumerable still takes that type whole, and its element is not what arrives.
+        if (Converter(underlying).Converter is not null)
+            return true;
+
         return IsScalar(ElementType(underlying) ?? underlying);
     }
+
+    /// <summary>
+    /// The same question about a field, which may carry a converter its type does not.
+    /// </summary>
+    /// <remarks>
+    /// <c>[JsonConverter]</c> on the member says how that member is written and read whatever its
+    /// type is, so it settles the member alone — the type goes on meaning what it means elsewhere.
+    /// </remarks>
+    public static bool IsLeaf(IPropertySymbol property)
+        => Converter(property).Converter is not null || IsLeaf(property.Type);
 
     /// <summary>The properties the translator would map, in the order it maps them.</summary>
     public static IEnumerable<IPropertySymbol> Fields(ITypeSymbol type)
@@ -307,5 +326,92 @@ internal static class GraphQLTypeFacts
             ? name
             : char.ToLowerInvariant(name[0]) + name.Substring(1);
 
-}
+    /// <summary>
+    /// The converter a model declared for a member, on the member or on its type, and whether it
+    /// is a factory that has to be asked for the real one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A converter is the model saying that this value is written and read whole. That settles
+    /// two questions at once, and they have to be settled the same way: a generated reader reads
+    /// the value through the converter rather than field by field, so the document has to ask for
+    /// it as one field rather than descend into its properties. Asking for
+    /// <c>money { amount }</c> and then reading <c>money</c> through a converter is the two halves
+    /// disagreeing, and the server is the one that says so.
+    /// </para>
+    /// <para>
+    /// Whether the JSON the converter writes is a string, a number or an object cannot be known
+    /// from here — nothing in this compilation can be run, and a schema that would say is not
+    /// something this library has. What can be known is that the model took the value out of the
+    /// serializer's hands, and a type that is not shaped by its properties has no selection set
+    /// this could write. So a converter means a leaf, and a model that wants the properties
+    /// selected individually is one that does not declare a converter over them.
+    /// </para>
+    /// <para>
+    /// Only a converter a reader could actually build counts, for the same reason: one without a
+    /// public constructor taking nothing, or deriving from neither <c>JsonConverter&lt;T&gt;</c>
+    /// nor <c>JsonConverterFactory</c>, is one <see cref="ResponseStructWriter"/> declines to read
+    /// through — and a document that treated it as a leaf anyway would be disagreeing with the
+    /// reader again, in the other direction. <c>System.Text.Json</c> refuses such an attribute at
+    /// run time too.
+    /// </para>
+    /// <para>
+    /// A converter registered globally instead — on the options rather than on the model — cannot
+    /// be seen from here, and keeping those in step is the consumer's to do.
+    /// </para>
+    /// </remarks>
+    public static (INamedTypeSymbol? Converter, bool Factory) Converter(IPropertySymbol property)
+    {
+        var own = Usable(Declared(property.GetAttributes()));
 
+        return own.Converter is not null ? own : Converter(property.Type);
+    }
+
+    /// <summary>The converter a model declared on a type itself, if any.</summary>
+    public static (INamedTypeSymbol? Converter, bool Factory) Converter(ITypeSymbol type)
+        => Usable(Declared(UnwrapNullable(type).GetAttributes()));
+
+    /// <summary>The type named by a <c>[JsonConverter]</c> among these attributes, if any.</summary>
+    private static ITypeSymbol? Declared(
+        System.Collections.Immutable.ImmutableArray<AttributeData> attributes)
+    {
+        foreach (var attribute in attributes)
+        {
+            if (attribute.AttributeClass?.ToDisplayString()
+                    == "System.Text.Json.Serialization.JsonConverterAttribute"
+                && attribute.ConstructorArguments.Length == 1
+                && attribute.ConstructorArguments[0].Value is ITypeSymbol converter)
+                return converter;
+        }
+
+        return null;
+    }
+
+    /// <summary>A converter as something that can be built and called, or nothing.</summary>
+    private static (INamedTypeSymbol? Converter, bool Factory) Usable(ITypeSymbol? declared)
+    {
+        if (declared is not INamedTypeSymbol converter)
+            return (null, false);
+
+        // A converter has to be one this can build: a factory is asked for one, and anything
+        // without a constructor taking nothing cannot be had at all.
+        if (!converter.InstanceConstructors.Any(x => x.Parameters.Length == 0
+            && x.DeclaredAccessibility == Accessibility.Public))
+            return (null, false);
+
+        for (var type = converter; type is not null; type = type.BaseType)
+        {
+            switch (type.ToDisplayString())
+            {
+                case "System.Text.Json.Serialization.JsonConverterFactory":
+                    return (converter, true);
+
+                case string name when name.StartsWith(
+                    "System.Text.Json.Serialization.JsonConverter<", StringComparison.Ordinal):
+                    return (converter, false);
+            }
+        }
+
+        return (null, false);
+    }
+}

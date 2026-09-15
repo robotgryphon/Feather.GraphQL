@@ -280,7 +280,7 @@ internal static class SelectionSetWriter
     {
         foreach (var property in GraphQLTypeFacts.Fields(type))
         {
-            if (GraphQLTypeFacts.IsLeaf(property.Type))
+            if (GraphQLTypeFacts.IsLeaf(property))
                 target.Child(GraphQLTypeFacts.FieldName(property), named);
         }
 
@@ -880,11 +880,16 @@ internal static class SelectionSetWriter
             element = GraphQLTypeFacts.Unwrap(property.Type);
 
             // A field that needs no selection set ends the path: what is written after it reads
-            // the value the server sent — `c.Name.Length`, `c.Founded.Year` — which happens where
-            // the rows are and asks for nothing. Tracing on would ask for `name { length }`,
-            // which is not a thing a schema has.
-            if (GraphQLTypeFacts.IsLeaf(property.Type))
-                break;
+            // the value the server sent — `c.Name.Length`, `c.Founded.Year`, a property of a
+            // value the model converts — which happens where the rows are and asks for nothing.
+            // Tracing on would ask for `name { length }`, which is not a thing a schema has.
+            //
+            // The field itself is already on the tree, and what the chain does with it from here
+            // is the caller's own — which is what reaching nothing means. Saying so rather than
+            // handing back the value's type is what keeps an operator further out from taking
+            // that type for rows of the graph and collecting its properties onto the field.
+            if (GraphQLTypeFacts.IsLeaf(property))
+                return Reach.None;
         }
 
         return Reach.At(node, element);
