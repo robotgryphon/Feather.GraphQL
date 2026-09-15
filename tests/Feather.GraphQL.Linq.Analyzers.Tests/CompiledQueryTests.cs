@@ -999,19 +999,74 @@ public class CompiledQueryTests
             at: "GroupBy");
 
     /// <summary>
+    /// The names of the countries in a continent, which is one path down and no more.
+    /// </summary>
+    /// <remarks>
+    /// Pinned because it is the shape everything else here is measured against. A document that
+    /// walks back up to a field it already had — <c>countries { continent { countries { name }
+    /// } }</c> — is a second trip through the resolvers for rows the first trip fetched, and the
+    /// only thing that should ever produce one is a projection that asked for it in so many words.
+    /// </remarks>
+    [Test]
+    public void The_names_of_the_countries_in_a_continent_are_one_path_down()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<string[][]> Names(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Continent>("continents")
+                    .Select(c => c.Countries.Select(n => n.Name).ToArray())
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ continents { countries { name } } }"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A flatten one level down, which is the same path with one more step in it.
+    /// </summary>
+    /// <remarks>
+    /// What <c>SelectMany</c> is for: the rows are two collections deep and the projection wants
+    /// them as one. The document is still one path down — nothing asked for twice, and nothing
+    /// asked for above the flattened rows, since nothing named a field there.
+    /// </remarks>
+    [Test]
+    public void A_SelectMany_flattens_one_level_down()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<string[][]> Names(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Hemisphere>("hemispheres")
+                    .Select(h => h.Continents.SelectMany(c => c.Countries).Select(n => n.Name).ToArray())
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ hemispheres { continents { countries { name } } } }"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
     /// Inside the projection it is ordinary client-side code, and the fields it names are asked
-    /// for where they are.
+    /// for where they land.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The names of the countries in a continent, flattened: <c>SelectMany</c> runs over rows that
-    /// have already arrived, so what the compiler has to get right is which fields it reads and
-    /// where they sit — <c>name</c> belongs under the countries the selector reached, not under
+    /// The related listings of the related listings: <c>SelectMany</c> runs over rows that have
+    /// already arrived, so what the compiler has to get right is which fields it reads and where
+    /// they sit — <c>name</c> belongs to the listings the selector reached, two deep, and not to
     /// the ones it ran over.
     /// </para>
     /// <para>
-    /// Getting that wrong is not a build failure but a bigger document, so the assertion is the
-    /// document itself rather than the absence of a diagnostic.
+    /// Written over a member holding its own type on purpose, because that is the case that used
+    /// to go wrong quietly: where the two levels are different types the mistake is a refusal,
+    /// and where they are the same it was a document asking for a field at the wrong depth and
+    /// every scalar of the right one besides.
     /// </para>
     /// </remarks>
     [Test]
@@ -1019,18 +1074,16 @@ public class CompiledQueryTests
     {
         var run = Run("""
             [GraphQLQuery]
-            private static Task<string[][]> Neighbours(HttpClient client, CancellationToken token)
-                => client.CreateQueryable<Continent>("continents")
-                    .Select(c => c.Countries.SelectMany(n => n.Continent.Countries).Select(m => m.Name).ToArray())
+            private static Task<string[][]> Related(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Listing>("listings")
+                    .Select(l => l.Related.SelectMany(r => r.Related).Select(x => x.Name).ToArray())
                     .ToArrayAsync(token);
             """);
 
         Assert.Multiple(() =>
         {
-            // One `name`, at the level the flattened rows came from.
-            Assert.That(run.Source,
-                Does.Contain("{ continents { countries { continent { countries { name } } } } }"));
-
+            // One `name`, on the listings the selector reached rather than the ones it ran over.
+            Assert.That(run.Source, Does.Contain("{ listings { related { related { name } } } }"));
             Assert.That(run.Diagnostics, Is.Empty);
         });
     }
@@ -1712,6 +1765,20 @@ public class Listing
 
     /// <summary>A list of scalars, which needs no selection set of its own.</summary>
     public string[] Tags { get; set; } = [];
+}
+
+/// <summary>
+/// A queried type two collections deep, so a projection has something real to flatten.
+/// </summary>
+/// <remarks>
+/// Declared here rather than added to the corpus for the same reason the rest of these are: the
+/// document tests compare the corpus byte for byte.
+/// </remarks>
+public class Hemisphere
+{
+    public string Name { get; set; } = "";
+
+    public Continent[] Continents { get; set; } = [];
 }
 
 /// <summary>A queried type whose collections are read-only, which is the shape this prefers.</summary>

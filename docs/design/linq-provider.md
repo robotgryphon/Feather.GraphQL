@@ -457,9 +457,22 @@ allowed in, put back where it belongs.
 **`SelectMany` hands back what its selector reached.** The operators after a flattening one
 name fields of the flattened rows, which live somewhere else in the document than the rows
 that were flattened. Following the selector to where it landed is what keeps
-`c.Countries.SelectMany(n => n.Continent.Countries).Select(m => m.Name)` from asking for
-`name` one level too high — and what lets it ask for nothing extra when the flattened member
-is a list of scalars, which needs no selection set at all.
+`h.Continents.SelectMany(c => c.Countries).Select(n => n.Name)` asking for
+`continents { countries { name } }` rather than for `name` one level too high and every
+scalar of the right level besides — and what lets it ask for nothing extra when the
+flattened member is a list of scalars, which needs no selection set at all.
+
+**What it does not do is shorten the path.** A projection that walks back up to a field it
+already had gets a document that does too: `c.Continent.Countries.Select(n => n.Name)` over
+a queryable of countries asks for `countries { continent { countries { name } } }`, which is
+a second trip through the resolvers for rows the first trip fetched. That is what the
+expression reads, and it reads it whether or not `SelectMany` is in it — the same document
+comes out of the plain nested `Select`. Collapsing it would mean deciding that a country's
+continent is the continent the country came from, which is a thing a schema may happen to do
+and not a thing GraphQL promises; and the projection is copied verbatim, so the row has to
+carry the path the projection reads through. The document is the path the projection walks.
+Walking a shorter one is the author's to write, and querying the field they actually want —
+`continents { countries { name } }` — is how.
 
 **A grouping's `Key` is not a field.** `IGrouping<K, T>` holds rows of the graph without
 being one, so a lambda over it ranges over those rows and `g.First().Name` is a field read

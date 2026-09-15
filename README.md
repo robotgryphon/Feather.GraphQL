@@ -365,11 +365,21 @@ inside the Select or after the await
 ```
 
 Which is exactly where they do work. Inside the `Select` they are client-side code like any other,
-and the fields they read are asked for where they land — `c.Countries.SelectMany(n =>
-n.Continent.Countries).Select(m => m.Name)` asks for `countries { continent { countries { name }
-} }`, with `name` under the countries the selector reached rather than the ones it ran over. After
-the `await` they run over the rows that came back: `(await …ToArrayAsync(token)).SelectMany(x =>
-x).ToArray()`.
+and the fields they read are asked for where they land: over a queryable of hemispheres,
+`h.Continents.SelectMany(c => c.Countries).Select(n => n.Name)` asks for
+`continents { countries { name } }` — one path down, with `name` on the countries the selector
+reached rather than on the continents it ran over. After the `await` they run over the rows that
+came back: `(await …ToArrayAsync(token)).SelectMany(x => x).ToArray()`.
+
+**The document is the path your projection walks, and nothing more.** If it walks back up to a
+field it already had, so does the document: over a queryable of countries,
+`c.Continent.Countries.Select(n => n.Name)` asks for `countries { continent { countries { name }
+} }`, because that is what it reads — the continent of each country, and then that continent's
+countries. It is a second trip through the resolvers, and the fix is to query what you actually
+want: `CreateQueryable<Continent>("continents").Select(c => c.Countries.Select(n => n.Name))` asks
+for `continents { countries { name } }`. Nothing collapses the round trip for you: a back-reference
+resolving to the node you came from is a thing your schema may happen to do, not a thing GraphQL
+promises, and your projection still reads through it.
 
 A grouping's `Key` is not a field — it is the key selector's value, computed where the rows are —
 so `GroupBy(n => n.Code).Select(g => g.Key)` asks for `code` and nothing else. What the grouping
