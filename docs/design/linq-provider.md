@@ -139,6 +139,14 @@ Rules:
 - `[JsonIgnore]` means "not a GraphQL field". Referencing an ignored property from a
   query is `FGQL005`. Without this opt-out the diagnostic could never fire, since the
   symbol-name fallback makes every property mappable.
+- `[JsonConverter]`, on a type or on a member, means "this is one value". It is not shaped
+  by its properties, so it is a leaf: the document asks for the field alone and a path
+  through it ends there, the same way a path ends at a `string`. This has to be the rule
+  because the generated reader already reads such a member through its converter rather
+  than field by field — a document asking `money { amount }` for a field the reader takes
+  whole is the two halves of one query disagreeing, and the server is what says so. Which
+  converters count is `GraphQLTypeFacts.Converter`, read by both halves so there is only
+  one answer to give.
 
 Reusing `[JsonPropertyName]` means the GraphQL field name and the JSON response key are
 the same string by construction, which is exactly what makes materialization free — the
@@ -396,11 +404,19 @@ by name.
 
 ### 7.6 Documents printed by the compiler
 
-The document a chain sends depends only on the chain's **shape**. Every value it binds —
-a predicate's constant, a `Take`'s count — goes into the variables payload as `$v0`,
-`$v1`, and the document says only `where: $v0`. That is what makes `Where(p => p.Age > 30)`
-and `Where(p => p.Age > 99)` print identically, and it is also what lets the document be
-printed before any value exists.
+The document a chain sends depends only on the chain's **shape**. A value it cannot know
+until the call — a predicate's constant, a `Take` given one of the method's parameters —
+goes into the variables payload as `$v0`, `$v1`, and the document says only `where: $v0`.
+That is what makes `Where(p => p.Age > 30)` and `Where(p => p.Age > 99)` print identically,
+and it is also what lets the document be printed before any value exists.
+
+A count the compiler already knows is not one of those, and is written into the document
+as the number it is: a terminal's own page (`First` is one, `Single` is two, `Last` is
+one), and a `Take` or `Skip` given a literal or a `const`. A variable there would carry the
+same number to the same server every time and hide it from the analyser sizing the query —
+`take: $v0` has to be budgeted as whatever the schema's maximum is, where `take: 1` is one
+row. It is the same argument that puts a filter's structure in the document, applied to the
+one figure that bounds the query.
 
 So the generator prints it, and an **interceptor** on the chain's entry point hands it
 over:
@@ -607,7 +623,7 @@ await q.ToArrayAsync();            // sequence   -> agree, precompiled
 
 ```csharp
 var q = …;
-q.First();                          // take: $vN
+q.First();                          // take: 1
 q.ToArray();                        // no take   -> disagree, declined
 ```
 
@@ -618,7 +634,7 @@ This is what precompiles the example in `examples/`, which keeps its queryable i
 so it can print the document before running it.
 
 **Async terminals are result operators.** `FirstAsync()` means `First()`, and `First()`
-puts `take: $vN` in the document. Reading the async terminals as plain materializers
+puts `take: 1` in the document. Reading the async terminals as plain materializers
 printed documents missing that argument — a bug the corpus caught, and one that stays
 caught.
 

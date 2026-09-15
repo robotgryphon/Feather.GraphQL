@@ -164,8 +164,12 @@ public class CompiledQueryShapeTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(handler.SentBody, Does.Contain("take: $v1"));
-            Assert.That(handler.SentBody, Does.Contain(@"""v1"":1"));
+            // One is the compiler's number, so the document carries it and the payload has only
+            // the filter's value in it.
+            Assert.That(handler.SentBody, Does.Contain(
+                @"query($v0: String) { people(where: { name: { eq: $v0 } }, take: 1) { name age } }"));
+
+            Assert.That(handler.SentBody, Does.Contain(@"""variables"":{""v0"":""Ada""}"));
             Assert.That(person.Name, Is.EqualTo("Ada"));
         });
     }
@@ -198,7 +202,9 @@ public class CompiledQueryShapeTests
 
         await OnlyAsync(handler.Client(), CancellationToken.None);
 
-        Assert.That(handler.SentBody, Does.Contain(@"""v0"":2"));
+        // Two, in the document, and nothing left for the payload to carry at all.
+        Assert.That(handler.SentBody, Does.Contain(@"query { people(take: 2) { name age } }"));
+        Assert.That(handler.SentBody, Does.Not.Contain(@"""variables"""));
     }
 
     [Test]
@@ -225,7 +231,7 @@ public class CompiledQueryShapeTests
         Assert.Multiple(() =>
         {
             Assert.That(present.SentBody,
-                Does.Contain("{ people(where: { age: { gt: $v0 } }, take: $v1) { name } }"));
+                Does.Contain("{ people(where: { age: { gt: $v0 } }, take: 1) { name } }"));
             Assert.That(found, Is.True);
             Assert.That(none, Is.False);
         });
@@ -573,7 +579,7 @@ public class CompiledQueryShapeTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(handler.SentBody, Does.Contain("people(order: $v0, take: $v1) { name age }"));
+            Assert.That(handler.SentBody, Does.Contain("people(order: $v0, take: 1) { name age }"));
             Assert.That(name, Is.EqualTo("Ada"));
         });
     }

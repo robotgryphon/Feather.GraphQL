@@ -9,9 +9,10 @@ namespace Feather.GraphQL.Linq.Analyzers;
 /// <remarks>
 /// <c>Filter</c> is a whole filter passed as one value of the schema's filter input type;
 /// <c>FilterValue</c> is a single comparison's value, for a filter whose structure went into the
-/// document instead.
+/// document instead. There is no member for a last page: only a terminal asks for one, so its
+/// size is always a number the document carries itself rather than a variable.
 /// </remarks>
-internal enum BoundValue { Filter, FilterValue, Order, Take, Skip, Last }
+internal enum BoundValue { Filter, FilterValue, Order, Take, Skip }
 
 /// <summary>One variable a document declared, and what the chain bound to it.</summary>
 /// <remarks>
@@ -102,15 +103,33 @@ internal static class QueryDocumentWriter
             Bind(facts.OrderArgument, "[" + (facts.SortInput ?? facts.ElementType.Name + "SortInput") + "!]",
                 BoundValue.Order);
 
+        // A page whose size the compiler already knows is written into the document as the number
+        // it is. A variable would carry the same number to the same server on every call, and cost
+        // it something on the way: a server sizing the query ahead of running it sees `take: $v0`
+        // as "up to whatever the schema allows" and has to budget for that, where `take: 1` is one
+        // row and it can say so. It is the reason a filter's structure is inlined too.
         if (facts.HasTake)
-            Bind(facts.Paging == Paging.Cursor ? facts.FirstArgument : facts.TakeArgument, "Int",
-                BoundValue.Take);
+        {
+            string argument = facts.Paging == Paging.Cursor ? facts.FirstArgument : facts.TakeArgument;
+
+            if (Page(facts, facts.TakeValue, model, token) is { } size)
+                arguments.Add((argument, size));
+            else
+                Bind(argument, "Int", BoundValue.Take);
+        }
 
         if (facts.HasSkip)
-            Bind(facts.SkipArgument, "Int", BoundValue.Skip);
+        {
+            if (Known(facts.SkipValue, model, token) is { } offset)
+                arguments.Add((facts.SkipArgument, offset));
+            else
+                Bind(facts.SkipArgument, "Int", BoundValue.Skip);
+        }
 
+        // Only a terminal asks for a last page — there is no operator that takes a size for one —
+        // so it is always the compiler's own number.
         if (facts.HasLast)
-            Bind(facts.LastArgument, "Int", BoundValue.Last);
+            arguments.Add((facts.LastArgument, (facts.ResultPage ?? 1).ToString()));
 
         var builder = new StringBuilder("query");
 
@@ -148,6 +167,29 @@ internal static class QueryDocumentWriter
 
         return builder.ToString();
     }
+
+    /// <summary>
+    /// The page size to write into the document, or null when only a variable can carry it.
+    /// </summary>
+    /// <remarks>
+    /// A terminal's page is the compiler's own decision — <c>First</c> means one, <c>Single</c>
+    /// means two — so it is always known. A <c>Take</c> the chain wrote is known when what it was
+    /// given is: a literal, or a <c>const</c>. What it is not is a value the method was handed,
+    /// which is the one case a variable is for.
+    /// </remarks>
+    private static string? Page(
+        ChainFacts facts,
+        ExpressionSyntax? take,
+        SemanticModel model,
+        CancellationToken token)
+        => facts.ExplicitTake ? Known(take, model, token) : (facts.ResultPage ?? 1).ToString();
+
+    /// <summary>A count the compiler can read off the syntax, as the document would spell it.</summary>
+    private static string? Known(ExpressionSyntax? expression, SemanticModel model, CancellationToken token)
+        => expression is not null
+            && model.GetConstantValue(expression, token) is { HasValue: true, Value: int count }
+                ? count.ToString()
+                : null;
 
     /// <summary>
     /// The filter as a value in the document, with a variable declared for each of its leaves.

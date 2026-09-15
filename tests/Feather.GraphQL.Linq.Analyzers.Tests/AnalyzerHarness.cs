@@ -63,6 +63,45 @@ internal static class AnalyzerHarness
             public Parts? Parts { get; set; }
             public Parts? More { get; set; }
             public string[] Tags { get; set; } = [];
+
+            /// <summary>The shape FGQL014 is for, with a converter saying it is one value.</summary>
+            public Bundle Bundle { get; set; } = new();
+
+            /// <summary>The shape FGQL014 is for, with the converter on the member instead.</summary>
+            [System.Text.Json.Serialization.JsonConverter(typeof(PartsConverter))]
+            public Parts? Boxed { get; set; }
+        }
+
+        [System.Text.Json.Serialization.JsonConverter(typeof(BundleConverter))]
+        public class Bundle
+        {
+            public Part[] Primary { get; set; } = [];
+        }
+
+        public sealed class BundleConverter : System.Text.Json.Serialization.JsonConverter<Bundle>
+        {
+            public override Bundle Read(
+                ref System.Text.Json.Utf8JsonReader reader,
+                System.Type typeToConvert,
+                System.Text.Json.JsonSerializerOptions options) => new();
+
+            public override void Write(
+                System.Text.Json.Utf8JsonWriter writer,
+                Bundle value,
+                System.Text.Json.JsonSerializerOptions options) => writer.WriteNullValue();
+        }
+
+        public sealed class PartsConverter : System.Text.Json.Serialization.JsonConverter<Parts>
+        {
+            public override Parts Read(
+                ref System.Text.Json.Utf8JsonReader reader,
+                System.Type typeToConvert,
+                System.Text.Json.JsonSerializerOptions options) => new();
+
+            public override void Write(
+                System.Text.Json.Utf8JsonWriter writer,
+                Parts value,
+                System.Text.Json.JsonSerializerOptions options) => writer.WriteNullValue();
         }
 
         public class Continent

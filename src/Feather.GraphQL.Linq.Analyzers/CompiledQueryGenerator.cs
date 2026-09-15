@@ -379,17 +379,13 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
                     payload.Add(new PayloadPart(binding.Name, sort));
                     continue;
 
-                case BoundValue.Take when !facts.ExplicitTake:
-                case BoundValue.Last:
-                    // A page the terminal asked for: First means one, Single means two, and the
-                    // compiler is the one that decided so.
-                    payload.Add(new PayloadPart(binding.Name,
-                        PageConstant(facts.ResultPage?.ToString() ?? "1")));
-                    continue;
-
                 case BoundValue.Take:
                 case BoundValue.Skip:
                 {
+                    // A page the document could not write out itself, which leaves one thing it
+                    // can be: a value the method was handed. Anything the compiler knew — a
+                    // terminal's own page, a literal, a const — went into the document as a
+                    // number and bound nothing here.
                     var argument = binding.Kind == BoundValue.Take ? facts.TakeValue : facts.SkipValue;
 
                     if (argument is null
@@ -1170,10 +1166,6 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
             }
         }
     }
-
-    /// <summary>A page size, written as the number it is.</summary>
-    private static ImmutableArray<FilterStep> PageConstant(string number)
-        => [new FilterStep(number, -1)];
 
     /// <summary>
     /// A variable that is one value and nothing else: a page size the caller passes, or a

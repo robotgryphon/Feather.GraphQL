@@ -177,8 +177,9 @@ public class CompiledQueryTests
     /// A result operator asks the server for a page and reduces what comes back.
     /// </summary>
     /// <remarks>
-    /// The page size is the compiler's own decision — First means one — so it is a constant in
-    /// the payload rather than a hole.
+    /// The page size is the compiler's own decision — First means one — so it goes into the
+    /// document as the number it is, and binds nothing. The filter's value is still a variable,
+    /// which is the difference the whole rule turns on: that one is the caller's.
     /// </remarks>
     [Test]
     public void A_result_operator_asks_for_its_page_and_reduces_to_it()
@@ -191,9 +192,84 @@ public class CompiledQueryTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(run.Source, Does.Contain("take: $v1"));
-            Assert.That(run.Source, Does.Contain("""\"v1\":1}}"""));
+            Assert.That(run.Source, Does.Contain(
+                "query($v0: String) { countries(where: { name: { eq: $v0 } }, take: 1) { name code } }"));
+
+            // One variable, the filter's, and no second one carrying a 1 the document already says.
+            Assert.That(run.Source, Does.Not.Contain("$v1"));
             Assert.That(run.Source, Does.Contain("The query returned no elements."));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A page the chain asked for with a number is written out too.
+    /// </summary>
+    /// <remarks>
+    /// The rule is about where the number comes from, not which operator asked: a literal and a
+    /// <c>const</c> are both known where the chain is written, and only a value handed to the
+    /// method is not. A chain binding nothing else then posts the constant body, since there is
+    /// no longer anything to write into it at run time.
+    /// </remarks>
+    [Test]
+    public void A_page_written_as_a_number_is_written_into_the_document()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country[]> Top(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries").Skip(5).Take(10).ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("query { countries(take: 10, skip: 5) { name code } }"));
+            Assert.That(run.Source, Does.Not.Contain("body.Write("));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>A <c>const</c> is as known as a literal, and read through its name.</summary>
+    [Test]
+    public void A_page_from_a_const_is_written_into_the_document()
+    {
+        var run = Run("""
+            private const int PageSize = 25;
+
+            [GraphQLQuery]
+            private static Task<Country[]> Page(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries").Take(PageSize).ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("query { countries(take: 25) { name code } }"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A page the method was handed is the one case only a variable can carry.
+    /// </summary>
+    /// <remarks>
+    /// The mirror of the cases above, and the reason the rule is about the value rather than the
+    /// operator: the same <c>Take</c> binds a variable here and writes a number there.
+    /// </remarks>
+    [Test]
+    public void A_page_from_a_parameter_stays_a_variable()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country[]> Paged(HttpClient client, int size, int from, CancellationToken token)
+                => client.CreateQueryable<Country>("countries").Skip(from).Take(size).ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain(
+                "query($v0: Int, $v1: Int) { countries(take: $v0, skip: $v1) { name code } }"));
+
+            Assert.That(run.Source, Does.Contain("body.Write(size)"));
+            Assert.That(run.Source, Does.Contain("body.Write(from)"));
             Assert.That(run.Diagnostics, Is.Empty);
         });
     }
@@ -248,6 +324,56 @@ public class CompiledQueryTests
             // this server was never asked to send.
             Assert.That(run.Source, Does.Not.Contain("\"items\"u8"));
             Assert.That(run.Source, Does.Not.Contain("\"totalCount\"u8"));
+        });
+    }
+
+    /// <summary>
+    /// A cursor-paged terminal names the connection's own argument, with the same number in it.
+    /// </summary>
+    /// <remarks>
+    /// Which argument a page goes into is the paging kind's to decide — <c>first</c> here, where
+    /// an unpaged field takes <c>take</c> — and the number in it is the compiler's either way.
+    /// </remarks>
+    [Test]
+    public void A_cursor_paged_terminal_writes_its_page_into_first()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country?> One(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries", o => o.Paging = PagingKind.Cursor)
+                    .FirstOrDefaultAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("query { countries(first: 1) { nodes { name code } } }"));
+            Assert.That(run.Source, Does.Not.Contain("$v0"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A last page is the one nothing but a terminal can ask for, so it is never a variable.
+    /// </summary>
+    /// <remarks>
+    /// There is no operator that hands <c>last</c> a size — <c>Last()</c> means one and nothing
+    /// else does — which is why the document carries the number and no binding exists for it.
+    /// </remarks>
+    [Test]
+    public void A_last_page_is_always_written_into_the_document()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country?> Newest(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries", o => o.Paging = PagingKind.Cursor)
+                    .LastOrDefaultAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("query { countries(last: 1) { nodes { name code } } }"));
+            Assert.That(run.Source, Does.Not.Contain("$v0"));
+            Assert.That(run.Diagnostics, Is.Empty);
         });
     }
 
@@ -785,7 +911,7 @@ public class CompiledQueryTests
         Assert.Multiple(() =>
         {
             Assert.That(run.Source, Does.Contain(
-                "{ countries(where: { name: { eq: $v0 } }, take: $v1) { name code } }"));
+                "{ countries(where: { name: { eq: $v0 } }, take: 1) { name code } }"));
 
             // The reduction the terminal asked for, substituted where the await was.
             Assert.That(run.Source, Does.Contain("rows[0]"));
@@ -1209,6 +1335,123 @@ public class CompiledQueryTests
         {
             Assert.That(run.Source, Does.Contain("{ continents { countries { name } } }"));
             Assert.That(run.Source, Does.Contain("return (rows).SelectMany(x => x).ToArray();"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    // ---- a value the model takes whole ------------------------------------------------------
+
+    /// <summary>
+    /// A type whose model declared a converter is one field, not a selection set over its
+    /// properties.
+    /// </summary>
+    /// <remarks>
+    /// The half that reads the reply already knew this: a member the model converts is read
+    /// through the converter whatever the query asked for beneath it. The half that writes the
+    /// document did not, so it descended into the properties and asked for
+    /// <c>issued { issuer serial }</c> — a selection set over a field the server sends as one
+    /// value, which is the query being refused rather than anything subtle going wrong later.
+    /// A converter is the model saying this value is not shaped by its properties, and that is as
+    /// true of the document as it is of the reader.
+    /// </remarks>
+    [Test]
+    public void A_type_its_model_converts_is_asked_for_as_one_field()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Invoice[]> All(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Invoice>("invoices").ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            // `origin` is the same type with nothing said about it, and so is not a leaf and not
+            // selected — which is what the automatic selection does with any object.
+            Assert.That(run.Source, Does.Contain("query { invoices { number total issued where } }"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A projection reading a property of such a value asks for the value, and reads the property
+    /// where the rows are.
+    /// </summary>
+    /// <remarks>
+    /// The same rule a scalar has already: <c>c.Name.Length</c> asks for <c>name</c> and takes the
+    /// length client-side, because tracing on would ask for <c>name { length }</c>. A converted
+    /// type is a value in exactly that sense — the converter hands back a whole <c>Stamp</c>, and
+    /// <c>Serial</c> is read off it.
+    /// </remarks>
+    [Test]
+    public void A_property_of_a_converted_value_is_read_where_the_rows_are()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<string[]> Serials(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Invoice>("invoices")
+                    .Select(x => x.Issued.Serial)
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("query { invoices { issued } }"));
+
+            // And the two halves agree about it: the field the document asked for as one value is
+            // the one the reader reads through the converter.
+            Assert.That(run.Source, Does.Contain("_issuedConverter.Read(ref reader"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A converter on the member rather than on the type settles that member alone.
+    /// </summary>
+    /// <remarks>
+    /// <c>Where</c> and <c>Origin</c> are the same type, and only one of them carries a converter.
+    /// The reader has always read them differently; the document now does too, which is the whole
+    /// of what agreeing means here.
+    /// </remarks>
+    [Test]
+    public void A_converter_on_the_member_settles_that_member_alone()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Invoice[]> Places(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Invoice>("invoices")
+                    .Select(x => new Invoice { Where = x.Where, Origin = x.Origin })
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("query { invoices { where origin { city country } } }"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A converter neither half could use leaves the type an object to both of them.
+    /// </summary>
+    /// <remarks>
+    /// <c>System.Text.Json</c> wants a public constructor taking nothing and refuses the attribute
+    /// without one, so a model that declares this is already broken — but the two halves of a
+    /// query still have to be broken the same way. They read one rule, in
+    /// <see cref="GraphQLTypeFacts"/>, so that "which converters count" cannot be answered twice.
+    /// </remarks>
+    [Test]
+    public void A_converter_nothing_can_build_is_not_a_converter_to_either_half()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Sealed[]> All(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Sealed>("sealeds").ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("query { sealeds { label } }"));
+            Assert.That(run.Source, Does.Not.Contain("Converter.Read(ref reader"));
             Assert.That(run.Diagnostics, Is.Empty);
         });
     }
@@ -1823,4 +2066,116 @@ public static class Labels
 
     /// <summary>A lookup of the caller's own, which a projection may index with a row's field.</summary>
     public static System.Collections.Generic.Dictionary<string, string> Map { get; } = [];
+}
+
+/// <summary>
+/// A queried type holding values their models take whole.
+/// </summary>
+/// <remarks>
+/// Declared here rather than added to the corpus model for the same reason <c>Listing</c> is: the
+/// document tests compare the corpus byte for byte, and a member added there would change what
+/// they pin.
+/// </remarks>
+public class Invoice
+{
+    public string Number { get; set; } = "";
+
+    /// <summary>A value type whose model converts it — two fields in C#, one on the wire.</summary>
+    public Money Total { get; set; }
+
+    /// <summary>The same again as a reference type, which is the shape this was reported as.</summary>
+    public Stamp Issued { get; set; } = new();
+
+    /// <summary>A member whose converter its own type does not carry.</summary>
+    [System.Text.Json.Serialization.JsonConverter(typeof(PlaceConverter))]
+    public Place Where { get; set; } = new();
+
+    /// <summary>The same type with nothing said about it, which is an object like any other.</summary>
+    public Place Origin { get; set; } = new();
+}
+
+/// <summary>A type that arrives as one value however many properties it has.</summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(StampConverter))]
+public class Stamp
+{
+    public string Issuer { get; set; } = "";
+
+    public string Serial { get; set; } = "";
+}
+
+/// <summary>The same shape with no converter on it, so it stays an object.</summary>
+public class Place
+{
+    public string City { get; set; } = "";
+
+    public string Country { get; set; } = "";
+}
+
+/// <summary>A queried type naming a converter nothing can build.</summary>
+public class Sealed
+{
+    public string Label { get; set; } = "";
+
+    public Locked Lock { get; set; } = new();
+}
+
+/// <inheritdoc cref="Sealed"/>
+[System.Text.Json.Serialization.JsonConverter(typeof(LockedConverter))]
+public class Locked
+{
+    public string Key { get; set; } = "";
+}
+
+/// <summary>Reads the whole stamp out of the one string the server sends.</summary>
+public sealed class StampConverter : System.Text.Json.Serialization.JsonConverter<Stamp>
+{
+    public override Stamp Read(
+        ref System.Text.Json.Utf8JsonReader reader,
+        Type typeToConvert,
+        System.Text.Json.JsonSerializerOptions options)
+    {
+        string[] parts = (reader.GetString() ?? "").Split(':');
+
+        return new Stamp { Issuer = parts[0], Serial = parts.Length > 1 ? parts[1] : "" };
+    }
+
+    public override void Write(
+        System.Text.Json.Utf8JsonWriter writer,
+        Stamp value,
+        System.Text.Json.JsonSerializerOptions options)
+        => writer.WriteStringValue(value.Issuer + ":" + value.Serial);
+}
+
+/// <inheritdoc cref="StampConverter"/>
+public sealed class PlaceConverter : System.Text.Json.Serialization.JsonConverter<Place>
+{
+    public override Place Read(
+        ref System.Text.Json.Utf8JsonReader reader,
+        Type typeToConvert,
+        System.Text.Json.JsonSerializerOptions options)
+        => new() { City = reader.GetString() ?? "" };
+
+    public override void Write(
+        System.Text.Json.Utf8JsonWriter writer,
+        Place value,
+        System.Text.Json.JsonSerializerOptions options)
+        => writer.WriteStringValue(value.City);
+}
+
+/// <summary>A converter with no constructor taking nothing, which nothing can ask for.</summary>
+public sealed class LockedConverter(string salt) : System.Text.Json.Serialization.JsonConverter<Locked>
+{
+    private readonly string _salt = salt;
+
+    public override Locked Read(
+        ref System.Text.Json.Utf8JsonReader reader,
+        Type typeToConvert,
+        System.Text.Json.JsonSerializerOptions options)
+        => new() { Key = _salt + reader.GetString() };
+
+    public override void Write(
+        System.Text.Json.Utf8JsonWriter writer,
+        Locked value,
+        System.Text.Json.JsonSerializerOptions options)
+        => writer.WriteStringValue(value.Key);
 }

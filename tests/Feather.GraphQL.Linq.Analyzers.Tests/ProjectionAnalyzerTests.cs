@@ -28,6 +28,28 @@ public class ProjectionAnalyzerTests
             AnalyzerHarness.Diagnose("client.CreateQueryable<Country>(\"countries\").Select(c => new { c.Parts });"),
             Is.EqualTo(new[] { "FGQL014" }));
 
+    /// <summary>
+    /// A value the model converts has no selection set to be empty, so it is not FGQL014.
+    /// </summary>
+    /// <remarks>
+    /// <c>Bundle</c> is <c>Parts</c> with a converter over it, and the converter is the whole
+    /// difference: the field arrives as one value, so there is nothing to project and nothing
+    /// missing. Reported either way, this would be a diagnostic with no fix — the projection it
+    /// asks for is the one the reader would ignore.
+    /// </remarks>
+    [Test]
+    public void A_member_the_model_converts_is_not_FGQL014()
+        => Assert.That(
+            AnalyzerHarness.Diagnose("client.CreateQueryable<Country>(\"countries\").Select(c => new { c.Bundle });"),
+            Is.Empty);
+
+    /// <summary>The same, with the converter on the member rather than on its type.</summary>
+    [Test]
+    public void A_member_whose_own_converter_takes_it_whole_is_not_FGQL014()
+        => Assert.That(
+            AnalyzerHarness.Diagnose("client.CreateQueryable<Country>(\"countries\").Select(c => new { c.Boxed });"),
+            Is.Empty);
+
     [Test]
     public void An_object_member_of_scalars_is_fine()
         => Assert.That(
