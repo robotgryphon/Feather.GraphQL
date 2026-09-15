@@ -38,6 +38,16 @@
     -->
     <PackageReference Include="NUnit" />
     <PackageReference Include="NUnit3TestAdapter" />
+    <!--
+      VSTest's host, which nothing here runs: `dotnet test` uses the platform above, pinned by the
+      runner in global.json, and it goes on doing so with this present. It is here for the IDEs,
+      whose test explorers still discover through VSTest and so need a testhost in the output
+      directory — without it Rider's explorer shows no tests at all, which reads as a broken
+      checkout rather than as a runner it does not support yet. JetBrains name the package as the
+      workaround themselves (RIDER-131530, RSRP-498837); drop it when Rider discovers
+      Microsoft.Testing.Platform tests on its own.
+    -->
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="NUnit.Analyzers">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
