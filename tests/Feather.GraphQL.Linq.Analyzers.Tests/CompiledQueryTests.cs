@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 
@@ -1011,26 +1012,233 @@ public class CompiledQueryTests
             says: "'Span' is a 'TimeSpan', which the generated reader has no read for that is certainly right",
             at: "Span");
 
+    // ---- a projection that mixes the row with everything else -------------------------------
+
     /// <summary>
-    /// A value named in the projection that never reads the row.
+    /// A projection may name values that are not the row's.
     /// </summary>
     /// <remarks>
-    /// Naming a member is what puts a field in the document, so a member named on its own has to
-    /// be the row's own. One that is not asks the server for a field of something else, which is
-    /// why the chain is refused rather than the value quietly copied — and the way to reach such
-    /// a value from a compiled query is to hand it in as a parameter, which the message says.
+    /// A constant, a static of somebody else's, anything the call site can see: it reads no row,
+    /// so it asks the server for nothing, and it is copied into the shaping where it goes on
+    /// meaning what it meant. Naming a member is what puts a field in the document — but only
+    /// when the member is a row's, which is a question about where the read starts rather than
+    /// about the read.
     /// </remarks>
     [Test]
-    public void A_projection_naming_a_value_that_never_reads_the_row_says_so()
-        => Declines("""
+    public void A_projection_may_mix_in_a_value_that_is_not_the_rows()
+    {
+        var run = Run("""
             [GraphQLQuery]
             private static Task<Renamed[]> Labelled(HttpClient client, CancellationToken token)
                 => client.CreateQueryable<Country>("countries")
-                    .Select(c => new Renamed { Title = Labels.Default })
+                    .Select(c => new Renamed { Title = Labels.Default + c.Name })
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            // The constant asked for nothing, and the field beside it still asked for itself.
+            Assert.That(run.Source, Does.Contain("{ countries { name } }"));
+            Assert.That(run.Source, Does.Contain("Title = global::Feather.GraphQL.Linq.Analyzers.Tests.Labels.Default + c.Name"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A nested lambda may read the row it is nested inside, and that field is asked for.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The case this walk was rebuilt for. A projection nests, so more than one row is in scope
+    /// inside an inner lambda, and a read belongs to whichever one it starts at. Tracking only
+    /// the innermost made <c>c.Code</c> here name nothing the innermost row had, which meant it
+    /// was skipped — the document went out without <c>code</c>, and the shaping that came back
+    /// read <c>c.Code</c> off a row that had no such member.
+    /// </para>
+    /// <para>
+    /// Which is the worst shape a bug in this file can take: not a refusal, but a wrong document
+    /// and generated code that does not compile, from a projection that is ordinary C#. The
+    /// harness compiles what the generator emitted for exactly this reason.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public void A_nested_lambda_may_read_the_row_it_is_nested_in()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<string[][]> Qualified(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => c.Continent.Countries.Select(n => n.Name + c.Code).ToArray())
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source,
+                Does.Contain("{ countries { continent { countries { name } } code } }"));
+
+            Assert.That(run.Source, Does.Contain("c.Continent.Countries.Select(n => n.Name + c.Code).ToArray()"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A sequence of the caller's own, filtered by a field of the row.
+    /// </summary>
+    /// <remarks>
+    /// Both halves at once: the sequence is not the graph's and asks for nothing, while the
+    /// lambda over it reads a row from further out and asks for that. The operators run
+    /// client-side either way, so the whole of it is copied into the shaping.
+    /// </remarks>
+    [Test]
+    public void A_sequence_of_the_callers_own_may_be_filtered_by_a_row_field()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<string[]> Matching(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => Labels.All.Where(l => l == c.Code).Joined())
+                    .ToArrayAsync(token);
+
+            internal static string Joined(this System.Collections.Generic.IEnumerable<string> values)
+                => string.Join(", ", values);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            // Only the field the predicate compared against: the list it filtered is not the
+            // server's to send.
+            Assert.That(run.Source, Does.Contain("{ countries { code } }"));
+            Assert.That(run.Source, Does.Contain("global::Feather.GraphQL.Linq.Analyzers.Tests.Labels.All.Where(l => l == c.Code)"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A lambda over what an operator in front of it produced is refused, not guessed at.
+    /// </summary>
+    /// <remarks>
+    /// The other side of knowing which row a read belongs to. <c>r</c> here ranges over
+    /// <c>Renamed</c>, which the nested <c>Select</c> made up client-side — so <c>r.Title</c> is
+    /// not a field of anything the server has, and placing it under <c>countries</c> would ask
+    /// for a field no country has. It was placed there until this walk learned what each node
+    /// stands for.
+    /// </remarks>
+    [Test]
+    public void A_lambda_over_what_a_projection_produced_declines()
+        => Declines("""
+            [GraphQLQuery]
+            private static Task<Renamed[][]> Titled(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => c.Continent.Countries
+                        .Select(n => new Renamed { Title = n.Name })
+                        .Where(r => r.Title != "")
+                        .ToArray())
                     .ToArrayAsync(token);
             """,
-            says: "take the value as a parameter of the query method instead",
-            at: "Labels.Default");
+            says: "ranges over what an operator in front of it produced rather than over rows of the graph",
+            at: "r");
+
+    /// <summary>
+    /// What is written after a scalar field reads the value the server sent.
+    /// </summary>
+    /// <remarks>
+    /// <c>Length</c> is a property, and for a while that was all this asked: the path was traced
+    /// through it and the document went out asking for <c>name { length }</c>, which is not a
+    /// thing a schema has. A field that needs no selection set is where a path ends — what
+    /// follows it happens where the rows are, like everything else client-side.
+    /// </remarks>
+    [Test]
+    public void A_member_of_a_scalar_field_is_read_where_the_rows_are()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<int[]> Lengths(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => c.Name.Trim().Length)
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ countries { name } }"));
+            Assert.That(run.Source, Does.Contain("c.Name.Trim().Length"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A path may run through a client-side call that lands back on a row.
+    /// </summary>
+    /// <remarks>
+    /// <c>First()</c> hands back one of the rows the member holds, so the field named after it is
+    /// that member's field and the path goes on from where the chain landed. What makes this safe
+    /// to follow rather than a guess is the node knowing which type its fields belong to: a chain
+    /// that projected hands back something else, and is refused instead.
+    /// </remarks>
+    [Test]
+    public void A_path_may_run_through_a_call_that_lands_back_on_a_row()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<string[]> Neighbouring(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => c.Continent.Countries.First().Continent.Name)
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source,
+                Does.Contain("{ countries { continent { countries { continent { name } } } } }"));
+
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A path may run through an index, which changes which row is read and not which fields it
+    /// has — including an index that is itself a field.
+    /// </summary>
+    [Test]
+    public void A_path_may_run_through_an_index()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<string[]> Looked(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => Labels.Map[c.Code] + c.Continent.Countries[0].Name)
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            // The lookup is the caller's own and asks for nothing; the field it is indexed by,
+            // and the field read off the row the index picked, are both asked for.
+            Assert.That(run.Source, Does.Contain("{ countries { code continent { countries { name } } } }"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A projection of nothing but values that are not the row's still declines.
+    /// </summary>
+    /// <remarks>
+    /// Not because the values are a problem — they are not — but because a GraphQL selection set
+    /// cannot be empty, and a projection that reads no row names no field. The reason says that
+    /// rather than blaming the value it found.
+    /// </remarks>
+    [Test]
+    public void A_projection_that_reads_no_row_at_all_declines()
+        => Declines("""
+            [GraphQLQuery]
+            private static Task<string[]> Labelled(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => Labels.Default)
+                    .ToArrayAsync(token);
+            """,
+            says: "its Select names no field of 'Country'",
+            at: "c => Labels.Default");
 
     /// <summary>Asserts a method was left to the runtime, and said so.</summary>
     private static void Declines(string method)
@@ -1127,28 +1335,37 @@ public class CompiledQueryTests
             }
             """;
 
+        // The same opt-in the package ships, because what is generated is an interceptor and a
+        // compilation without it rejects every one of them.
+        var parse = new CSharpParseOptions(LanguageVersion.Preview)
+            .WithFeatures([new KeyValuePair<string, string>(
+                "InterceptorsNamespaces", "Feather.GraphQL.Linq.Generated")]);
+
         var compilation = CSharpCompilation.Create(
             "Compiled",
-            [CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Preview))],
+            [CSharpSyntaxTree.ParseText(source, parse)],
             SnippetReferences.All(),
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
-        var errors = compilation.GetDiagnostics()
-            .Where(d => d.Severity == DiagnosticSeverity.Error)
-            .ToArray();
+        Assert.That(Errors(compilation), Is.Empty, "the snippet did not compile");
 
-        Assert.That(errors, Is.Empty,
-            $"the snippet did not compile: {string.Join("; ", errors.Select(e => e.ToString()))}");
+        CSharpGeneratorDriver
+            .Create([new CompiledQueryGenerator().AsSourceGenerator()], parseOptions: parse)
+            .RunGeneratorsAndUpdateCompilation(compilation, out var compiled, out var reported);
 
-        var run = CSharpGeneratorDriver
-            .Create(new CompiledQueryGenerator())
-            .RunGenerators(compilation)
-            .GetRunResult();
+        // What came out has to compile, which is the one thing reading the generated text cannot
+        // tell you. A document missing a field the shaping goes on to read is exactly this: the
+        // text looks like the projection that was written, and the row it runs over has no such
+        // member. Asserted for every case rather than for the ones that thought to ask, because
+        // the ones that do not think to ask are where it would land.
+        Assert.That(Errors(compiled), Is.Empty, "the generated code did not compile");
+
+        var generated = compiled.SyntaxTrees.Skip(1).FirstOrDefault();
 
         return new Result(
-            run.GeneratedTrees.Length == 0 ? null : run.GeneratedTrees[0].ToString(),
-            [.. run.Diagnostics.Select(d => d.Id)],
-            [.. run.Diagnostics]);
+            generated?.ToString(),
+            [.. reported.Select(d => d.Id)],
+            [.. reported]);
     }
 
     /// <summary>
@@ -1180,6 +1397,12 @@ public class CompiledQueryTests
 
         return "_ = " + name + "(" + string.Join(", ", arguments) + ");";
     }
+
+    /// <summary>What a compilation rejects, as a message a failing case can read.</summary>
+    private static string[] Errors(Compilation compilation)
+        => [.. compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .Select(d => d.ToString())];
 
     private static int Occurrences(string? text, string value)
     {
@@ -1218,4 +1441,10 @@ public class Listing
 public static class Labels
 {
     public static string Default { get; } = "none";
+
+    /// <summary>A sequence of the caller's own, which a projection may filter against a row.</summary>
+    public static string[] All { get; } = [];
+
+    /// <summary>A lookup of the caller's own, which a projection may index with a row's field.</summary>
+    public static System.Collections.Generic.Dictionary<string, string> Map { get; } = [];
 }

@@ -25,6 +25,14 @@ namespace Feather.GraphQL.Linq.Analyzers;
 /// why, because a decline is now an error against the author's own projection rather than a
 /// silent fall back to a translator that no longer exists.
 /// </para>
+/// <para>
+/// What it walks is a <see cref="Scope"/> rather than a single parameter. A projection nests:
+/// <c>c => new(c.Name, c.Permissions.Select(p => p.Code + c.Code))</c> has two rows in scope
+/// inside the inner lambda, and a read belongs to whichever one it starts at. Tracking only the
+/// innermost is why <c>c.Code</c> there was once dropped from the document and then read from a
+/// row that had no such field — a wrong document and generated code that did not compile, from a
+/// projection that is ordinary C#.
+/// </para>
 /// </remarks>
 internal static class SelectionSetWriter
 {
@@ -62,6 +70,102 @@ internal static class SelectionSetWriter
     }
 
     /// <summary>
+    /// Where a read landed: in the selection set, outside the graph, or nowhere at all.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The three are different answers and were once two. <em>In the selection set</em> is a read
+    /// of a row, and the fields it names are asked of the server. <em>Outside</em> is a read of
+    /// something that is not a row — a constant, a value the caller passed in, a static of
+    /// somebody else's — which asks for nothing and is copied into the shaping unchanged.
+    /// <em>Nowhere</em> is a refusal.
+    /// </para>
+    /// <para>
+    /// <see cref="Element"/> is the type whose fields <see cref="Node"/> stands for, which an
+    /// operator chain needs in order to tell a lambda that still ranges over those rows from one
+    /// that ranges over what a projection turned them into.
+    /// </para>
+    /// </remarks>
+    private readonly record struct Reach(Node? Node, ITypeSymbol? Element, bool Outside)
+    {
+        /// <summary>The walk could not place this read.</summary>
+        public static readonly Reach No = new(null, null, false);
+
+        /// <summary>The read is not of the graph at all, so it asks the server for nothing.</summary>
+        public static readonly Reach None = new(null, null, true);
+
+        public static Reach At(Node node, ITypeSymbol? element) => new(node, element, false);
+
+        public bool Declined => Node is null && !Outside;
+    }
+
+    /// <summary>
+    /// The rows a projection has in scope, innermost first.
+    /// </summary>
+    /// <remarks>
+    /// One entry per lambda parameter between the projection and the expression being read, each
+    /// with the <see cref="Reach"/> its members are collected onto. A name that is in none of them
+    /// is not a row — it is the caller's own value, and reads of it ask for nothing.
+    /// </remarks>
+    private sealed class Scope
+    {
+        private readonly Scope? _outer;
+        private readonly string? _name;
+        private readonly Reach _reach;
+
+        private Scope(string? name, Reach reach, Scope? outer)
+        {
+            _name = name;
+            _reach = reach;
+            _outer = outer;
+        }
+
+        public static Scope Of(string? name, Node target, ITypeSymbol element)
+            => new(name, Reach.At(target, element), null);
+
+        /// <summary>The same scope with one more row in it, for the body of a nested lambda.</summary>
+        public Scope With(string? name, Reach reach) => new(name, reach, this);
+
+        /// <summary>What a name in scope reads from, or null when it is not one of the rows.</summary>
+        public Reach? Find(string name)
+        {
+            for (var scope = this; scope is not null; scope = scope._outer)
+            {
+                if (scope._name == name)
+                    return scope._reach;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Whether an expression names any row in scope.
+        /// </summary>
+        /// <remarks>
+        /// By name, as everything else here matches them, and deliberately in the direction that
+        /// costs a decline rather than a wrong document: a lambda whose parameter cannot be named
+        /// at all makes every expression count as naming it, so every expression has to be
+        /// understood outright.
+        /// </remarks>
+        public bool Mentions(SyntaxNode node)
+        {
+            for (var scope = this; scope is not null; scope = scope._outer)
+            {
+                if (scope._name is null)
+                    return true;
+            }
+
+            foreach (var name in node.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
+            {
+                if (Find(name.Identifier.ValueText) is not null)
+                    return true;
+            }
+
+            return false;
+        }
+    }
+
+    /// <summary>
     /// The selection set for a projection, or null when it cannot be derived here.
     /// </summary>
     public static Node? Build(
@@ -91,7 +195,8 @@ internal static class SelectionSetWriter
 
         bool built = projection is null
             ? CollectScalars(elementType, root, null)
-            : Collect(projection.Body, Parameter(projection), root, model, token, refusals);
+            : Collect(
+                projection.Body, Scope.Of(Parameter(projection), root, elementType), model, token, refusals);
 
         if (built && root.Order.Count > 0)
         {
@@ -163,24 +268,30 @@ internal static class SelectionSetWriter
 
     private static bool Collect(
         SyntaxNode node,
-        string? parameter,
-        Node target,
+        Scope scope,
         SemanticModel model,
         CancellationToken token,
         Refusals refusals)
     {
+        // An expression that names no row in scope cannot read one, so it asks the server for
+        // nothing: a constant, a value the method was handed, a static of somebody else's. It is
+        // still copied into the shaping, where it goes on meaning what it means here — which is
+        // the whole of what a projection mixing outside data in needs.
+        if (!scope.Mentions(node))
+            return true;
+
         switch (node)
         {
             case ParenthesizedExpressionSyntax parenthesized:
-                return Collect(parenthesized.Expression, parameter, target, model, token, refusals);
+                return Collect(parenthesized.Expression, scope, model, token, refusals);
 
             case CastExpressionSyntax cast:
-                return Collect(cast.Expression, parameter, target, model, token, refusals);
+                return Collect(cast.Expression, scope, model, token, refusals);
 
             case AnonymousObjectCreationExpressionSyntax anonymous:
                 foreach (var initializer in anonymous.Initializers)
                 {
-                    if (!Collect(initializer.Expression, parameter, target, model, token, refusals))
+                    if (!Collect(initializer.Expression, scope, model, token, refusals))
                         return false;
                 }
 
@@ -190,7 +301,7 @@ internal static class SelectionSetWriter
             {
                 foreach (var argument in creation.ArgumentList?.Arguments ?? default)
                 {
-                    if (!Collect(argument.Expression, parameter, target, model, token, refusals))
+                    if (!Collect(argument.Expression, scope, model, token, refusals))
                         return false;
                 }
 
@@ -204,7 +315,7 @@ internal static class SelectionSetWriter
                             + "nothing to trace a field through — assign the values to named members");
                     }
 
-                    if (!Collect(assignment.Right, parameter, target, model, token, refusals))
+                    if (!Collect(assignment.Right, scope, model, token, refusals))
                         return false;
                 }
 
@@ -215,7 +326,13 @@ internal static class SelectionSetWriter
             // what they change is the shape of the result, never which fields to request.
             case InvocationExpressionSyntax invocation when IsLinqOperator(invocation, model, token):
             {
-                var nested = CollectSequence(invocation, parameter, target, model, token, refusals);
+                var reach = CollectSequence(invocation, scope, model, token, refusals);
+
+                if (reach.Declined)
+                    return false;
+
+                if (reach.Outside)
+                    return true;
 
                 // Expanded from what the chain reads rather than from what it produces: a chain
                 // that named no field at all still needs the member it ran over to carry a
@@ -223,39 +340,49 @@ internal static class SelectionSetWriter
                 // fields of a type the node does not stand for.
                 var origin = Origin(invocation);
 
-                return nested is not null
-                    && Expand(TypeOf(origin, model, token), nested, origin, refusals);
+                return Expand(TypeOf(origin, model, token), reach.Node!, origin, refusals);
             }
 
             // Any other call — a method of the caller's own, an extension over what a member
             // holds — runs client-side too, over the values it is handed. Those are named here,
             // so they are collected and the call itself is where the tracing stops.
             case InvocationExpressionSyntax invocation:
-                return CollectCall(invocation, parameter, target, model, token, refusals, out _);
+                return CollectCall(invocation, scope, model, token, refusals, out _);
 
             case MemberAccessExpressionSyntax member:
             {
-                var reached = Descend(member, parameter, target, model, token, refusals);
+                var reach = Descend(member, scope, model, token, refusals);
 
-                return reached is not null
-                    && Expand(TypeOf(member, model, token), reached, member, refusals);
+                if (reach.Declined)
+                    return false;
+
+                return reach.Outside
+                    || Expand(TypeOf(member, model, token), reach.Node!, member, refusals);
             }
 
-            case IdentifierNameSyntax identifier when identifier.Identifier.ValueText == parameter:
+            // A row named where a value is wanted: its own scalars, as naming an object member
+            // does. One of the caller's own values named the same way asks for nothing.
+            case IdentifierNameSyntax identifier when scope.Find(identifier.Identifier.ValueText) is { } reach:
             {
+                if (reach.Outside)
+                    return true;
+
+                if (reach.Node is null)
+                    return refusals.No(identifier, Unplaceable(identifier));
+
                 var type = TypeOf(identifier, model, token)!;
 
-                return CollectScalars(type, target, identifier.GetLocation())
+                return CollectScalars(type, reach.Node, identifier.GetLocation())
                     || refusals.No(identifier,
                         $"'{type.Name}' has no scalar fields of its own, and a selection set cannot be "
                         + "empty — say what to take from it with a nested Select");
             }
 
-            // Anything else built out of what the element holds — a comparison, a concatenation,
-            // a conditional, an index — asks for the fields its parts name and for nothing
-            // besides, since what it does with them it does client-side.
+            // Anything else built out of what the rows hold — a comparison, a concatenation, a
+            // conditional, an index — asks for the fields its parts name and for nothing besides,
+            // since what it does with them it does client-side.
             default:
-                return Parts(node, parameter, target, model, token, refusals);
+                return Parts(node, scope, model, token, refusals);
         }
     }
 
@@ -264,28 +391,27 @@ internal static class SelectionSetWriter
     /// parts.
     /// </summary>
     /// <remarks>
-    /// A part that never names the projection's parameter cannot read the element, so it asks for
-    /// nothing; one that does has to be an expression this understands outright. That is the same
-    /// bargain the cases above strike, applied to the operators between them rather than to a
-    /// list of the ones that were thought of.
+    /// A part that names no row in scope cannot read one, so it asks for nothing; one that does
+    /// has to be an expression this understands outright. That is the same bargain the cases above
+    /// strike, applied to the operators between them rather than to a list of the ones that were
+    /// thought of.
     /// </remarks>
     private static bool Parts(
         SyntaxNode node,
-        string? parameter,
-        Node target,
+        Scope scope,
         SemanticModel model,
         CancellationToken token,
         Refusals refusals)
     {
         foreach (var child in node.ChildNodes())
         {
-            if (!Mentions(child, parameter))
+            if (!scope.Mentions(child))
                 continue;
 
             bool collected = child is ExpressionSyntax expression
-                ? Collect(expression, parameter, target, model, token, refusals)
+                ? Collect(expression, scope, model, token, refusals)
                 // An argument list, an initializer: not an expression itself, but made of them.
-                : Parts(child, parameter, target, model, token, refusals);
+                : Parts(child, scope, model, token, refusals);
 
             if (!collected)
                 return false;
@@ -295,13 +421,18 @@ internal static class SelectionSetWriter
     }
 
     /// <summary>
-    /// Walks a client-side operator chain over a collection member back to the member it reads,
-    /// collecting whatever its lambdas name along the way.
+    /// Walks a client-side operator chain back to what it reads, collecting whatever its lambdas
+    /// name along the way.
     /// </summary>
-    private static Node? CollectSequence(
+    /// <remarks>
+    /// What it reads may be a member of a row, and may equally be a collection of the caller's
+    /// own — a chain filtering a list against a field of the row is both at once. The first is
+    /// where the operators' lambdas collect; the second asks for nothing, and its lambdas may
+    /// still read a row from further out.
+    /// </remarks>
+    private static Reach CollectSequence(
         SyntaxNode node,
-        string? parameter,
-        Node target,
+        Scope scope,
         SemanticModel model,
         CancellationToken token,
         Refusals refusals)
@@ -309,31 +440,34 @@ internal static class SelectionSetWriter
         switch (node)
         {
             case ParenthesizedExpressionSyntax parenthesized:
-                return CollectSequence(parenthesized.Expression, parameter, target, model, token, refusals);
+                return CollectSequence(parenthesized.Expression, scope, model, token, refusals);
 
             case CastExpressionSyntax cast:
-                return CollectSequence(cast.Expression, parameter, target, model, token, refusals);
+                return CollectSequence(cast.Expression, scope, model, token, refusals);
 
             case InvocationExpressionSyntax invocation when IsLinqOperator(invocation, model, token):
             {
                 if (invocation.Expression is not MemberAccessExpressionSyntax access)
                 {
-                    return refusals.Nothing<Node>(invocation,
+                    return Cannot(refusals, invocation,
                         "a LINQ operator called as a plain static method cannot be traced back to the "
                         + "member it reads — call it on the member instead");
                 }
 
-                var nested = CollectSequence(access.Expression, parameter, target, model, token, refusals);
-                if (nested is null)
-                    return null;
+                var nested = CollectSequence(access.Expression, scope, model, token, refusals);
+
+                if (nested.Declined)
+                    return Reach.No;
 
                 foreach (var argument in invocation.ArgumentList.Arguments)
                 {
                     if (argument.Expression is not LambdaExpressionSyntax lambda)
                         continue;
 
-                    if (!Collect(lambda.Body, Parameter(lambda), nested, model, token, refusals))
-                        return null;
+                    var inner = scope.With(Parameter(lambda), Ranges(lambda, nested, model, token));
+
+                    if (!Collect(lambda.Body, inner, model, token, refusals))
+                        return Reach.No;
                 }
 
                 return nested;
@@ -342,21 +476,52 @@ internal static class SelectionSetWriter
             // A call this does not know is still something the operators in front of it read
             // from, so what it was handed is what they run over.
             case InvocationExpressionSyntax invocation:
-                return CollectCall(invocation, parameter, target, model, token, refusals, out var source)
-                    ? source
-                    : null;
+                return CollectCall(invocation, scope, model, token, refusals, out var source) ? source : Reach.No;
 
             case MemberAccessExpressionSyntax member:
-                return Descend(member, parameter, target, model, token, refusals);
+                return Descend(member, scope, model, token, refusals);
 
-            case IdentifierNameSyntax identifier when identifier.Identifier.ValueText == parameter:
-                return target;
+            // A row, or a collection of the caller's own held in a parameter — told apart by
+            // whether the name is one of the rows in scope.
+            case IdentifierNameSyntax identifier:
+                return scope.Find(identifier.Identifier.ValueText) ?? Reach.None;
 
             default:
-                return refusals.Nothing<Node>(node,
+                return Cannot(refusals, node,
                     $"'{Brief(node)}' is not something a projection can be traced through — a field has "
-                    + "to be reached from the row the Select was given");
+                    + "to be reached from one of the rows the Select was given");
         }
+    }
+
+    /// <summary>
+    /// What a lambda handed to a client-side operator ranges over.
+    /// </summary>
+    /// <remarks>
+    /// The rows the receiver holds, when it still holds those: the node stands for one type's
+    /// fields, and an operator in front of this one may have turned them into something else. A
+    /// lambda over what a projection produced names members of a type the node does not stand
+    /// for, so binding it there would ask the server for fields that are not the member's —
+    /// unless what it produced is a scalar, which has no fields to name at all.
+    /// </remarks>
+    private static Reach Ranges(
+        LambdaExpressionSyntax lambda,
+        Reach over,
+        SemanticModel model,
+        CancellationToken token)
+    {
+        if (over.Node is null
+            || over.Element is null
+            || GraphQLTypeFacts.IsScalar(over.Element)
+            || model.GetSymbolInfo(lambda, token).Symbol
+                is not IMethodSymbol { Parameters.Length: 1 } written)
+            return Reach.None;
+
+        var ranges = GraphQLTypeFacts.Unwrap(written.Parameters[0].Type);
+
+        if (SymbolEqualityComparer.Default.Equals(ranges, over.Element))
+            return over;
+
+        return GraphQLTypeFacts.IsScalar(ranges) ? Reach.None : Reach.No;
     }
 
     /// <summary>
@@ -379,45 +544,47 @@ internal static class SelectionSetWriter
     /// selection does not stand for.
     /// </para>
     /// <para>
-    /// <paramref name="source"/> is the node the receiver landed on, so an operator further out
-    /// can go on collecting into it. It is null when the call reads nothing through a receiver —
+    /// <paramref name="source"/> is where the receiver landed, so an operator further out can go
+    /// on collecting into it. It reaches nothing when the call reads nothing through a receiver —
     /// a static method, or an extension called as one — which is not a refusal.
     /// </para>
     /// </remarks>
     private static bool CollectCall(
         InvocationExpressionSyntax invocation,
-        string? parameter,
-        Node target,
+        Scope scope,
         SemanticModel model,
         CancellationToken token,
         Refusals refusals,
-        out Node? source)
+        out Reach source)
     {
-        source = null;
+        source = Reach.None;
 
         var receiver = invocation.Expression is MemberAccessExpressionSyntax access
             ? access.Expression
             : null;
 
-        // Called some other way than through a receiver or by name — through a delegate the
-        // element holds, say — which is a call this cannot follow.
-        if (receiver is null && Mentions(invocation.Expression, parameter))
+        // Called some other way than through a receiver or by name — through a delegate a row
+        // holds, say — which is a call this cannot follow.
+        if (receiver is null && scope.Mentions(invocation.Expression))
         {
             return refusals.No(invocation.Expression,
-                $"'{Brief(invocation.Expression)}' is called through a value the row holds, which is not "
-                + "a call this can trace a field through");
+                $"'{Brief(invocation.Expression)}' is called through a value a row holds, which is not a "
+                + "call this can trace a field through");
         }
 
-        if (receiver is not null && Mentions(receiver, parameter))
+        if (receiver is not null && scope.Mentions(receiver))
         {
-            source = CollectSequence(receiver, parameter, target, model, token, refusals);
+            source = CollectSequence(receiver, scope, model, token, refusals);
 
-            if (source is null)
+            if (source.Declined)
                 return false;
+        }
 
-            var beginning = Origin(receiver);
+        if (source.Node is not null)
+        {
+            var beginning = Origin(receiver!);
             var origin = TypeOf(beginning, model, token);
-            var handed = TypeOf(receiver, model, token);
+            var handed = TypeOf(receiver!, model, token);
 
             if (origin is not null
                 && handed is not null
@@ -425,17 +592,16 @@ internal static class SelectionSetWriter
                 && SymbolEqualityComparer.Default.Equals(
                     GraphQLTypeFacts.Unwrap(origin), GraphQLTypeFacts.Unwrap(handed)))
             {
-                CollectScalars(GraphQLTypeFacts.Unwrap(origin), source, beginning.GetLocation());
+                CollectScalars(GraphQLTypeFacts.Unwrap(origin), source.Node, beginning.GetLocation());
             }
 
-            if (!Expand(origin, source, beginning, refusals))
+            if (!Expand(origin, source.Node, beginning, refusals))
                 return false;
         }
 
         foreach (var argument in invocation.ArgumentList.Arguments)
         {
-            if (!CollectArgument(
-                argument.Expression, invocation, receiver, parameter, target, source, model, token, refusals))
+            if (!CollectArgument(argument.Expression, scope, source, model, token, refusals))
                 return false;
         }
 
@@ -446,54 +612,26 @@ internal static class SelectionSetWriter
     /// What one argument of such a call reads.
     /// </summary>
     /// <remarks>
-    /// An expression that never names the projection's parameter cannot read the element and is
-    /// skipped; one that does is collected where it is rooted. A lambda is the exception, because
-    /// it names the parameter of its own: it ranges over what the receiver holds, exactly as one
-    /// given to a LINQ operator does, and is collected onto the receiver's node — but only when
-    /// its parameter is that element, since a lambda over anything else names members this could
-    /// not place.
+    /// An ordinary expression is collected where it is rooted, exactly as anywhere else. A lambda
+    /// is the one that needs saying: it ranges over what the receiver holds, as one given to a
+    /// LINQ operator does, so its own parameter joins the scope and its body is collected with
+    /// the rows further out still in it.
     /// </remarks>
     private static bool CollectArgument(
         ExpressionSyntax argument,
-        InvocationExpressionSyntax call,
-        ExpressionSyntax? receiver,
-        string? parameter,
-        Node target,
-        Node? source,
+        Scope scope,
+        Reach source,
         SemanticModel model,
         CancellationToken token,
         Refusals refusals)
-    {
-        if (argument is not LambdaExpressionSyntax lambda)
-        {
-            return !Mentions(argument, parameter)
-                || Collect(argument, parameter, target, model, token, refusals);
-        }
-
-        var handed = receiver is null ? null : TypeOf(receiver, model, token);
-        var over = handed is null ? null : GraphQLTypeFacts.Unwrap(handed);
-
-        // Nothing under it to select — a sequence of scalars, or a call that reads nothing
-        // through a receiver at all — so the lambda names no field of the graph, unless it
-        // reaches back out to the element, which is a read this could not place.
-        if (source is null || over is null || GraphQLTypeFacts.IsScalar(over))
-        {
-            return !Mentions(lambda, parameter)
-                || refusals.No(lambda,
-                    $"the lambda given to '{Called(call)}' reads the row from outside the values that call "
-                    + "was handed, which is not a read this can place in the selection set");
-        }
-
-        if (model.GetSymbolInfo(lambda, token).Symbol is not IMethodSymbol { Parameters.Length: 1 } written
-            || !SymbolEqualityComparer.Default.Equals(written.Parameters[0].Type, over))
-        {
-            return refusals.No(lambda,
-                $"the lambda given to '{Called(call)}' does not range over the '{over.Name}' values its "
-                + "receiver holds, so the members it names cannot be placed in the selection set");
-        }
-
-        return Collect(lambda.Body, Parameter(lambda), source, model, token, refusals);
-    }
+        => argument is LambdaExpressionSyntax lambda
+            ? Collect(
+                lambda.Body,
+                scope.With(Parameter(lambda), Ranges(lambda, source, model, token)),
+                model,
+                token,
+                refusals)
+            : Collect(argument, scope, model, token, refusals);
 
     /// <summary>The expression a client-side chain reads from, which its operators run over.</summary>
     private static ExpressionSyntax Origin(ExpressionSyntax expression)
@@ -506,27 +644,21 @@ internal static class SelectionSetWriter
             _ => expression
         };
 
-    /// <summary>
-    /// Whether an expression names the projection's parameter anywhere inside it.
-    /// </summary>
-    /// <remarks>
-    /// By name, as everything else here matches it, and deliberately in the direction that costs
-    /// a decline rather than a wrong document: a projection whose parameter cannot be named at
-    /// all is treated as named everywhere, so every expression has to be understood outright.
-    /// </remarks>
-    private static bool Mentions(SyntaxNode node, string? parameter)
-    {
-        if (parameter is null)
-            return true;
-
-        foreach (var name in node.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
+    /// <summary>What a member chain is read off, which decides whether it is a read of the graph.</summary>
+    private static SyntaxNode Root(SyntaxNode expression)
+        => expression switch
         {
-            if (name.Identifier.ValueText == parameter)
-                return true;
-        }
+            ParenthesizedExpressionSyntax parenthesized => Root(parenthesized.Expression),
+            CastExpressionSyntax cast => Root(cast.Expression),
+            PostfixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.SuppressNullableWarningExpression } suppress
+                => Root(suppress.Operand),
+            MemberAccessExpressionSyntax member => Root(member.Expression),
 
-        return false;
-    }
+            // Taking one of many changes which row is read and not which fields it has, so a
+            // path reads through an index the way it reads through a `!`.
+            ElementAccessExpressionSyntax element => Root(element.Expression),
+            _ => expression
+        };
 
     /// <summary>
     /// A GraphQL object field must carry a selection set, so naming one without saying what to
@@ -556,19 +688,32 @@ internal static class SelectionSetWriter
                 + "a GraphQL selection set cannot be empty — say what to take from it with a nested Select");
     }
 
-    /// <summary>Walks a member chain onto the selection tree, returning the node it lands on.</summary>
-    private static Node? Descend(
+    /// <summary>
+    /// Walks a member chain onto the selection tree, returning where it landed.
+    /// </summary>
+    /// <remarks>
+    /// The root is settled first, because it decides whether any of this is a read of the graph.
+    /// A chain rooted at a row is a path through the document, and every member along it has to be
+    /// a field; one rooted anywhere else is the caller's own value, where a member is a member and
+    /// none of this library's business.
+    /// </remarks>
+    private static Reach Descend(
         SyntaxNode expression,
-        string? parameter,
-        Node target,
+        Scope scope,
         SemanticModel model,
         CancellationToken token,
         Refusals refusals)
     {
-        var path = new List<(string Name, Location Where)>();
+        var root = Root(expression);
+        var reach = Start(root, expression, scope, model, token, refusals);
+
+        if (reach.Node is not { } from)
+            return reach;
+
+        var path = new List<(string Name, Location Where, ITypeSymbol Type)>();
         var current = expression;
 
-        while (true)
+        while (current != root)
         {
             switch (current)
             {
@@ -580,51 +725,151 @@ internal static class SelectionSetWriter
                     current = cast.Expression;
                     continue;
 
+                case PostfixUnaryExpressionSyntax
+                    { RawKind: (int)SyntaxKind.SuppressNullableWarningExpression } suppress:
+                    current = suppress.Operand;
+                    continue;
+
+                // One of what a member holds. The fields are the member's either way, so nothing
+                // is placed for the index — but the index itself may read a row, and that is a
+                // read like any other.
+                case ElementAccessExpressionSyntax indexed:
+                {
+                    if (!Parts(indexed.ArgumentList, scope, model, token, refusals))
+                        return Reach.No;
+
+                    current = indexed.Expression;
+                    continue;
+                }
+
                 case MemberAccessExpressionSyntax member:
                 {
                     if (model.GetSymbolInfo(member, token).Symbol is not IPropertySymbol property)
                     {
-                        return refusals.Nothing<Node>(member.Name,
+                        return Cannot(refusals, member.Name,
                             $"'{member.Name}' is not a property, and only a property is a field the query "
                             + "can ask the server for");
                     }
 
                     if (GraphQLTypeFacts.IsIgnored(property))
                     {
-                        return refusals.Nothing<Node>(member.Name,
+                        return Cannot(refusals, member.Name,
                             $"'{property.Name}' is marked [JsonIgnore], so it is not a field the query can "
                             + "ask the server for");
                     }
 
-                    path.Insert(0, (GraphQLTypeFacts.FieldName(property), member.Name.GetLocation()));
+                    path.Insert(0, (
+                        GraphQLTypeFacts.FieldName(property), member.Name.GetLocation(), property.Type));
+
                     current = member.Expression;
                     continue;
                 }
 
-                case IdentifierNameSyntax identifier when identifier.Identifier.ValueText == parameter:
-                {
-                    var node = target;
-                    foreach (var (name, where) in path)
-                        node = node.Child(name, where);
-
-                    return node;
-                }
-
-                // A member named on its own has to be the row's, because naming it is what puts a
-                // field in the document. One that reads the row through something else — a
-                // lambda's own parameter from further out — is a read this cannot place; one that
-                // does not read the row at all is a value from somewhere the document has no way
-                // to ask for, and a parameter is how such a value reaches a compiled query.
                 default:
-                    return refusals.Nothing<Node>(expression, Mentions(expression, parameter)
-                        ? $"'{Brief(expression)}' is not read from the row the Select was given, and only "
-                            + "what is read from the row can be asked of the server"
-                        : $"'{Brief(expression)}' is named on its own in the Select without reading the row, "
-                            + "and a member named there is what puts a field in the document — take the "
-                            + "value as a parameter of the query method instead");
+                    return Cannot(refusals, expression,
+                        $"'{Brief(expression)}' is not read from one of the rows the Select was given, and "
+                        + "only what is read from a row can be asked of the server");
             }
         }
+
+        var node = from;
+        var element = reach.Element;
+
+        foreach (var (name, where, type) in path)
+        {
+            node = node.Child(name, where);
+            element = GraphQLTypeFacts.Unwrap(type);
+
+            // A field that needs no selection set ends the path: what is written after it reads
+            // the value the server sent — `c.Name.Length`, `c.Founded.Year` — which happens where
+            // the rows are and asks for nothing. Tracing on would ask for `name { length }`,
+            // which is not a thing a schema has.
+            if (GraphQLTypeFacts.IsLeaf(type))
+                break;
+        }
+
+        return Reach.At(node, element);
     }
+
+    /// <summary>
+    /// Where a member chain starts reading from, which is what decides whether any of it is a
+    /// read of the graph.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A row in scope is the ordinary case, and a name that is in none of them is the caller's
+    /// own value — neither needs saying twice. The one that does is a chain read off what a
+    /// client-side call produced, which is three cases wearing one shape.
+    /// </para>
+    /// <para>
+    /// Where the call produced a scalar, nothing under it could have been asked for, so what
+    /// follows is the caller's own business and only what the call itself reads is collected:
+    /// <c>c.Name.Trim().Length</c> asks for <c>name</c> and stops. Where it produced the very
+    /// rows a member holds — <c>c.Permissions.First()</c> — the path goes on from where that
+    /// chain landed, because <c>.Code</c> after it is that member's field and nothing else.
+    /// Where it produced something else, a member of it might be a field or might not, and one
+    /// left out of the document is one the shaping goes on to read off a row that has not got it.
+    /// That last is the refusal.
+    /// </para>
+    /// </remarks>
+    private static Reach Start(
+        SyntaxNode root,
+        SyntaxNode expression,
+        Scope scope,
+        SemanticModel model,
+        CancellationToken token,
+        Refusals refusals)
+    {
+        if (root is IdentifierNameSyntax identifier)
+        {
+            if (scope.Find(identifier.Identifier.ValueText) is not { } named || named.Outside)
+                return Reach.None;
+
+            return named.Node is null ? Cannot(refusals, identifier, Unplaceable(identifier)) : named;
+        }
+
+        if (root is not InvocationExpressionSyntax call || TypeOf(call, model, token) is not { } produced)
+        {
+            return Cannot(refusals, expression,
+                $"'{Brief(expression)}' is read off something this cannot follow, and a field has to be "
+                + "reached from one of the rows the Select was given");
+        }
+
+        if (GraphQLTypeFacts.IsLeaf(produced))
+            return Parts(expression, scope, model, token, refusals) ? Reach.None : Reach.No;
+
+        var landed = CollectSequence(call, scope, model, token, refusals);
+
+        if (landed.Declined)
+            return Reach.No;
+
+        if (landed.Outside)
+            return Reach.None;
+
+        // Only where what the call handed back is still the rows that node stands for. A chain
+        // that projected handed back something else, whose members are not that member's fields.
+        if (!SymbolEqualityComparer.Default.Equals(GraphQLTypeFacts.Unwrap(produced), landed.Element))
+        {
+            return Cannot(refusals, expression,
+                $"'{Brief(expression)}' reads a member of what '{Brief(call)}' produced, which is not one "
+                + "of the rows the server sends — read the fields before the chain changes what it holds");
+        }
+
+        return landed;
+    }
+
+    /// <summary>Records why a read could not be placed, and answers a refusal.</summary>
+    private static Reach Cannot(Refusals refusals, SyntaxNode where, string reason)
+    {
+        refusals.Note(where, reason);
+        return Reach.No;
+    }
+
+    /// <summary>Why reading a field off a lambda's own parameter cannot be placed.</summary>
+    private static string Unplaceable(IdentifierNameSyntax identifier)
+        => $"'{identifier}' ranges over what an operator in front of it produced rather than over rows of "
+        + "the graph, so the fields named on it are not fields the server has — read them before the "
+        + "chain changes what it holds";
 
     private static bool IsLinqOperator(
         InvocationExpressionSyntax invocation,
@@ -635,14 +880,6 @@ internal static class SelectionSetWriter
 
     private static ITypeSymbol? TypeOf(SyntaxNode node, SemanticModel model, CancellationToken token)
         => model.GetTypeInfo(node, token).Type;
-
-    /// <summary>What a call is called, for a message that has to name it.</summary>
-    private static string Called(InvocationExpressionSyntax invocation)
-        => invocation.Expression switch
-        {
-            MemberAccessExpressionSyntax access => access.Name.ToString(),
-            _ => Brief(invocation.Expression)
-        };
 
     /// <summary>
     /// An expression as a message can quote it.

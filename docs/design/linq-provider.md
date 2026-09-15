@@ -432,6 +432,39 @@ every operator must be one it knows, and — the load-bearing rule — the chain
 document printed without that `First()` is a *wrong* document, not a missing one. So
 finishing means a result operator, a materializing call, or a `foreach`.
 
+**A projection has rows in scope, not a row.** The walk that derives a selection set used
+to carry one lambda parameter: the projection's own, replaced by the inner one whenever it
+stepped into a nested lambda. That is right until a projection nests and reads outwards,
+which `c.Permissions.Select(p => p.Code + c.Name)` does. `c.Name` named nothing the
+innermost parameter had, so it was skipped as an expression that reads no row — the
+document went out without `name`, and the shaping that came back read `c.Name` off a row
+struct that had no such member. A wrong document and generated code that does not compile,
+from a projection that is ordinary C#.
+
+So the walk carries a **scope**: one entry per lambda parameter between the projection and
+the expression being read, each with the node its members are collected onto. A read
+belongs to whichever row it starts at, found by walking the scope from the innermost out —
+which also gets shadowing right for free, since the innermost match is the one C# binds to.
+
+A name in none of them is not a row. That is the other half: it is a constant, a static of
+somebody else's, a value the method was handed, and it asks the server for nothing at all.
+Before the scope existed there was nowhere to put that answer, so a member named on its own
+that did not read the row was refused — which made a projection mixing in outside data a
+chain that could not be compiled, for no reason anybody could act on.
+
+Two more things the scope makes decidable, both of which were silently wrong rather than
+refused. A node knows which type its fields belong to, so a lambda over what a projection
+produced — `.Select(n => n.Name).Where(s => s.Length > 2)` — is told from one still ranging
+over the member's rows, and its members are not placed under a node they are not fields of.
+And a path ends at a field that needs no selection set: `c.Name.Length` traced through
+`Length` because `Length` is a property, and asked the server for `name { length }`.
+
+**What the harness checks.** Every compiled-query case now adds what the generator emitted
+back to the compilation and asserts it compiles. Reading the generated text cannot catch a
+document missing a field the shaping goes on to read — the text looks exactly like the
+projection that was written — and that is the failure mode this file can produce that costs
+the most to find.
+
 **A decline names what it refused, and points at it.** A refusal used to be a sentence
 about a whole method — "its reply could not be modelled — a field the element does not
 have, a type with no certain read, or a collection that is not an array" — reported

@@ -296,6 +296,27 @@ scalars filled in, since which of them it reads is not visible. What it may not 
 row — `c.Describe()` on the element is `FGQL015`, because the row carries the element's fields
 without being its type.
 
+**A projection may mix the row with everything else.** A constant, a static of somebody else's, a
+value the query method was handed, a lookup of your own indexed by a field: none of it reads a
+row, so none of it asks the server for anything, and all of it is copied into the shaping where it
+goes on meaning what it meant. `new Summary(Labels.Default, c.Name)` asks for `name` and nothing
+besides. What a compiled query cannot reach is a local of the method (there is nowhere to declare
+one — the body is a single expression) or a member private to the declaring type; both are
+`FGQL015`, naming the value.
+
+**A nested lambda may read the row it is nested in.** `c.Permissions.Select(p => p.Code + c.Name)`
+asks for `permissions { code } name`: a projection nests, so more than one row is in scope, and a
+read belongs to whichever one it starts at. The same goes for a sequence of your own filtered by a
+field — `Known.Where(k => k == c.Code)` asks for `code` and leaves the list alone. What is refused
+is a lambda over what a projection produced: in `.Select(n => new Row(n.Name)).Where(r => r.Title
+!= "")`, `r.Title` is not a field of anything the server has, and `FGQL015` says so under `r`.
+
+**A path ends at a field that needs no selection set.** `c.Name.Length`, `c.Founded.Year`,
+`c.Tags[0].Trim()` — what is written after a scalar reads the value the server sent, so it runs
+where the rows are and asks for nothing more. A path may equally run through an index or through a
+client-side call that lands back on a row: `c.Permissions.First().Code` asks for
+`permissions { code }`.
+
 **A selected collection has to be a one-dimensional array.** The reply is read by generated code
 that fills an array — `Permission[]`, not `List<Permission>` or `IReadOnlyList<Permission>` — and
 there is no conversion written from one to the other. A member the query selects that is declared

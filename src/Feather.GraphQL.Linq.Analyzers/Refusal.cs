@@ -45,14 +45,6 @@ internal sealed class Refusals
         return false;
     }
 
-    /// <summary>Records a refusal and answers null, for the walks that answer a node.</summary>
-    public T? Nothing<T>(SyntaxNode where, string reason)
-        where T : class
-    {
-        Note(where, reason);
-        return null;
-    }
-
     /// <summary>Records a refusal without answering anything.</summary>
     public void Note(SyntaxNode where, string reason)
         => First ??= new Refusal(reason, where.GetLocation());
