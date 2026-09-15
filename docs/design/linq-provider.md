@@ -432,6 +432,39 @@ every operator must be one it knows, and — the load-bearing rule — the chain
 document printed without that `First()` is a *wrong* document, not a missing one. So
 finishing means a result operator, a materializing call, or a `foreach`.
 
+**How many of something reaches the member that asked for it.** A generated reader
+accumulates a list as it reads one, because that is the only shape that can be filled
+without knowing the count in advance. For a long time the only member it would fill was
+`T[]`, and every other way of spelling "many of these" was a decline — which is a strange
+thing to be told about a model the serializer this replaced read without complaining, and
+is what a schema's own `[PermissionEdge!]` most naturally maps onto.
+
+So the accumulated list is converted, and the set of conversions is deliberately the set
+that can be recognised with certainty rather than the set that could be guessed:
+
+| declared as | how it is filled |
+| --- | --- |
+| `List<T>`, `IEnumerable<T>`, `ICollection<T>`, `IList<T>`, `IReadOnlyCollection<T>`, `IReadOnlyList<T>` | the accumulated list itself, no copy |
+| `T[]` | `ToArray()` |
+| a type with a public constructor taking a collection | `new Target(rows)` |
+| a type a collection expression builds — `[CollectionBuilder]`, or enumerable with a parameterless constructor and an `Add` | `[.. rows]` |
+| anything else | `FGQL015`, naming the member |
+
+A conversion guessed wrong here is a reply read into the wrong shape rather than a build
+that fails, which is why the last row is a refusal and why it says both things that would
+work: declare `IReadOnlyCollection<T>`, or give the type a constructor taking one.
+
+**What a row holds, and why it is not always read-only.** A row of this file's own is a
+payload rather than a model, and nothing should be able to add to it — so where the member
+it mirrors is declared as something a read-only list already is, the row holds
+`IReadOnlyList<T>` and the rows reach it uncopied. Where the caller declared a `List`, it
+holds a `List`. Not for want of tidiness: the projection is the caller's own code, copied
+verbatim, and was written against the type they declared — `new Perms(c.Name,
+c.Permissions)` compiles where they wrote it and has to go on compiling where it lands.
+Narrowing the member to be tidy would be a compile error in code nobody wrote, which is the
+failure mode this whole file is arranged to avoid. Declaring `IReadOnlyCollection<T>` is
+what buys the read-only row, and costs nothing else.
+
 **A projection has rows in scope, not a row.** The walk that derives a selection set used
 to carry one lambda parameter: the projection's own, replaced by the inner one whenever it
 stepped into a nested lambda. That is right until a projection nests and reads outwards,
@@ -469,13 +502,14 @@ the most to find.
 about a whole method — "its reply could not be modelled — a field the element does not
 have, a type with no certain read, or a collection that is not an array" — reported
 against the method's name. Three faults wearing one message, and the author left to work
-out which of them it was and where. That is affordable while a decline costs an
+out which of them it was and where. (The third of them is no longer a fault at all, which
+is the sort of thing a message naming what it refused makes visible.) That is affordable while a decline costs an
 optimisation and a chain still runs the slow way; it is not affordable now that a decline
 costs the query.
 
 So every walk that can refuse carries a `Refusals`, and records the expression it stopped
-at with a reason naming the thing that is wrong: `'Permissions' is declared as
-'List<PermissionEdge>', and a selected collection has to be an array`. `FGQL015` is
+at with a reason naming the thing that is wrong: `'Span' is a 'TimeSpan', which the
+generated reader has no read for that is certainly right`. `FGQL015` is
 reported against that expression rather than against the method, which puts the squiggle
 under the member — the same place EF Core puts one when a call has no translation. The
 first refusal recorded wins, because a walk unwinds through the frames that called it and

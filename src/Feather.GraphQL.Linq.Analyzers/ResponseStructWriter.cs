@@ -95,6 +95,15 @@ internal static class ResponseStructWriter
     /// <param name="Read">The expression that reads one of it, given a reader on its value.</param>
     /// <param name="Nested">The struct it holds, when it holds one.</param>
     /// <param name="IsList">Whether the payload carries many of it.</param>
+    /// <param name="Element">
+    /// The C# spelling of one row of it, when it carries many — which is the member's own element
+    /// type where the rows are read as that, and a generated struct's name where they are mirrored.
+    /// </param>
+    /// <param name="Fill">
+    /// How the accumulated rows become what the member is declared as: the list itself where the
+    /// declaration is already satisfied by one, and a constructor or a collection expression
+    /// otherwise.
+    /// </param>
     /// <param name="Converter">
     /// The converter the model declared for it, when it declared one. A member with a converter is
     /// read through it rather than by a getter, whatever its type would otherwise have allowed.
@@ -108,7 +117,9 @@ internal static class ResponseStructWriter
         Model? Nested,
         bool IsList,
         string? Converter = null,
-        bool Factory = false);
+        bool Factory = false,
+        string Element = "",
+        string Fill = "");
 
     /// <summary>
     /// Describes the structs one reply needs, or null when its shape cannot be modelled.
@@ -230,17 +241,6 @@ internal static class ResponseStructWriter
             var item = GraphQLTypeFacts.ElementType(type);
             bool list = item is not null && !GraphQLTypeFacts.IsScalar(type);
 
-            // A list is read into an array, so the member has to be declared as one. Anything
-            // else — a List, an IReadOnlyCollection — would need a conversion this does not
-            // write, and is left to the reading that can produce any shape.
-            if (list && property.Type is not IArrayTypeSymbol { Rank: 1 })
-            {
-                return Refuse(field,
-                    $"'{property.Name}' is declared as '{Readable(property.Type)}', and a selected "
-                    + $"collection has to be an array — declare it '{Readable(item!)}[]', since the "
-                    + "generated reader fills an array rather than converting into a collection type");
-            }
-
             if (list)
                 type = item!;
 
@@ -263,8 +263,17 @@ internal static class ResponseStructWriter
                         $"nothing under '{property.Name}' could be read into a '{Readable(type)}'");
                 }
 
+                if (!list)
+                {
+                    members.Add(new Member(field, property.Name, nested.Name, "", nested, false));
+                    continue;
+                }
+
+                if (Many(property, nested.Name, direct, out string held, out string fill) is { } refused)
+                    return Refuse(field, refused);
+
                 members.Add(new Member(
-                    field, property.Name, nested.Name + (list ? "[]" : ""), "", nested, list));
+                    field, property.Name, held, "", nested, true, Element: nested.Name, Fill: fill));
 
                 continue;
             }
@@ -277,9 +286,22 @@ internal static class ResponseStructWriter
                     + "out of the projection");
             }
 
-            // Declared as the property is — an array when the payload carries many — while the
-            // read is of one element, which is what the loop over the array calls.
-            members.Add(new Member(field, property.Name, Declared(property.Type), read, null, list));
+            if (!list)
+            {
+                members.Add(new Member(field, property.Name, Declared(property.Type), read, null, false));
+                continue;
+            }
+
+            // Declared as the member is where the reader fills the member itself, and as a
+            // read-only list where it fills a row of its own — while the read is of one element,
+            // which is what the loop over the values calls.
+            string one = Declared(type);
+
+            if (Many(property, one, direct, out string carried, out string filled) is { } why)
+                return Refuse(field, why);
+
+            members.Add(new Member(
+                field, property.Name, carried, read, null, true, Element: one, Fill: filled));
         }
 
         if (members.Count == 0)
@@ -292,6 +314,64 @@ internal static class ResponseStructWriter
         }
 
         return new Model(name, members, target, reader);
+    }
+
+    /// <summary>
+    /// How a member carrying many of something is declared, and how the rows reach it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two different questions wearing one shape. Where the reader fills the caller's own type,
+    /// the member is declared as the caller declared it and the rows have to be turned into that
+    /// — by a constructor or a collection expression, and where neither is recognised the query
+    /// is refused rather than a conversion guessed at.
+    /// </para>
+    /// <para>
+    /// Where it fills a row of its own, the declaration is this file's to choose, and it chooses
+    /// a read-only list: a row is a payload and nothing may add to it. The rows reach it as they
+    /// are, since a list is one already.
+    /// </para>
+    /// </remarks>
+    /// <returns>Null when the member can be filled, and why it cannot when it cannot.</returns>
+    private static string? Many(
+        IPropertySymbol property,
+        string element,
+        bool direct,
+        out string held,
+        out string fill)
+    {
+        string items = Local(property.Name) + "Items";
+
+        // A row of this file's own holds a read-only list wherever the member it mirrors is
+        // declared as something one already is, and the rows reach it without being copied.
+        if (!direct && CollectionShapes.ReadOnlyHolds(property.Type))
+        {
+            held = CollectionShapes.ReadOnly(element);
+            fill = items;
+
+            return null;
+        }
+
+        string? spelled = direct ? Declared(property.Type) : CollectionShapes.Spelled(property.Type, element);
+
+        if (spelled is not null && CollectionShapes.Convert(property.Type, element, items) is { } written)
+        {
+            held = spelled;
+            fill = written;
+
+            return null;
+        }
+
+        held = "";
+        fill = "";
+
+        string row = Readable(GraphQLTypeFacts.ElementType(property.Type)!);
+
+        return $"'{property.Name}' is declared as '{Readable(property.Type)}', and the reader has no way "
+            + "to make one: it reads the rows into a read-only list, and nothing turns one of those into "
+            + $"a '{Readable(property.Type)}' — neither a public constructor taking a collection nor a "
+            + $"collection expression. Declare it 'IReadOnlyCollection<{row}>', which the rows satisfy as "
+            + "they are, or give it a constructor taking 'IEnumerable<" + row + ">'";
     }
 
     /// <summary>A type as a message names it: the C# spelling, with no <c>global::</c> on it.</summary>
@@ -704,18 +784,14 @@ internal static class ResponseStructWriter
     /// </remarks>
     private static void Scalars(StringBuilder builder, Member member)
     {
-        string element = member.Type.EndsWith("[]", StringComparison.Ordinal)
-            ? member.Type.Substring(0, member.Type.Length - 2)
-            : member.Type;
-
         builder.Append("                    var ").Append(Local(member)).Append("Items = ")
-            .Append("new global::System.Collections.Generic.List<").Append(element).Append(">();\n\n")
+            .Append("new global::System.Collections.Generic.List<").Append(member.Element).Append(">();\n\n")
             .Append("                    while (reader.Read() && reader.TokenType != ")
             .Append("global::System.Text.Json.JsonTokenType.EndArray)\n")
             .Append("                        ").Append(Local(member)).Append("Items.Add(")
             .Append(member.Read).Append(");\n\n")
             .Append("                    ").Append(Local(member)).Append(" = ")
-            .Append(Local(member)).Append("Items.ToArray();\n");
+            .Append(member.Fill).Append(";\n");
     }
 
     /// <summary>Reads a nested object, or a list of them, into its own struct.</summary>
@@ -746,7 +822,7 @@ internal static class ResponseStructWriter
             .Append("                            reader.Skip();\n")
             .Append("                    }\n\n")
             .Append("                    ").Append(Local(member)).Append(" = ")
-            .Append(Local(member)).Append("Items.ToArray();\n");
+            .Append(member.Fill).Append(";\n");
     }
 
     /// <summary>

@@ -317,12 +317,30 @@ where the rows are and asks for nothing more. A path may equally run through an 
 client-side call that lands back on a row: `c.Permissions.First().Code` asks for
 `permissions { code }`.
 
-**A selected collection has to be a one-dimensional array.** The reply is read by generated code
-that fills an array — `Permission[]`, not `List<Permission>` or `IReadOnlyList<Permission>` — and
-there is no conversion written from one to the other. A member the query selects that is declared
-as anything else is `FGQL015`, naming the member: `'Permissions' is declared as
-'List<PermissionEdge>', and a selected collection has to be an array`. This is about members of the
-queried type, not about the terminal — `ToListAsync` still hands you a `List<T>`.
+**A selected collection is held the way you declared it.** The reader accumulates a list as it
+reads — the only shape that can be filled without knowing the count first — and then hands it to
+the member. `List<T>` and the interfaces a list already is (`IEnumerable<T>`,
+`IReadOnlyCollection<T>`, `IReadOnlyList<T>`, `ICollection<T>`, `IList<T>`) cost nothing at all:
+the member *is* that list. `T[]` copies. Anything with a public constructor taking a collection —
+`HashSet<T>`, `Collection<T>`, your own — is handed one; anything a collection expression builds,
+`ImmutableArray<T>` and the rest of `System.Collections.Immutable` among them, gets `[.. rows]`.
+
+Prefer `IReadOnlyCollection<T>`: it costs no conversion, and where a row is a generated mirror of
+the payload the member is held as `IReadOnlyList<T>`, which is what a payload row should be. A
+member declared as something mutable is held as that type instead, because your projection was
+written against it and is copied verbatim.
+
+A type none of those reach is `FGQL015`, naming the member and both ways out:
+
+```
+'Tags' is declared as 'Sack', and the reader has no way to make one: it reads the rows into a
+read-only list, and nothing turns one of those into a 'Sack' — neither a public constructor
+taking a collection nor a collection expression. Declare it 'IReadOnlyCollection<string>',
+which the rows satisfy as they are, or give it a constructor taking 'IEnumerable<string>'
+```
+
+This is about members of the queried type, not about the terminal — `ToListAsync` still hands you
+a `List<T>`.
 
 **A refusal points at the part of the chain it is about.** `FGQL015` is reported against the
 expression the compiler stopped at rather than against the method, so the squiggle lands under the

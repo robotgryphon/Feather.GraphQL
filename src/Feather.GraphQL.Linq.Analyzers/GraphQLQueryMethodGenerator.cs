@@ -210,8 +210,10 @@ public sealed class GraphQLQueryMethodGenerator : IIncrementalGenerator
     /// from the reply would sometimes guess wrong.
     /// </para>
     /// <para>
-    /// A collection that is not an array is declined: a reader builds the rows into one and
-    /// handing back anything else would need a conversion this does not write.
+    /// This is about what the method hands back, which is not the same question as how a member
+    /// of a row holds many of something — that one is answered by <see cref="CollectionShapes"/>,
+    /// for every spelling it can convert into. Here an array is the only sequence, because the
+    /// reply type is built around one and there is nowhere else the conversion would go.
     /// </para>
     /// </remarks>
     private static (ITypeSymbol? Element, bool Single) Rows(ITypeSymbol type)

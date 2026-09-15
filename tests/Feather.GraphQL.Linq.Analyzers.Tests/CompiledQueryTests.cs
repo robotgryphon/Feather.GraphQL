@@ -963,35 +963,106 @@ public class CompiledQueryTests
     // ---- what a refusal says, and what it points at -----------------------------------------
 
     /// <summary>
-    /// A member the reply cannot be read into is named, and pointed at.
+    /// A member is held as the caller declared it, whatever way they spelled "many of these".
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The shape that sends people looking: a projection that is perfectly ordinary C# and a
-    /// document that is perfectly ordinary GraphQL, refused because of how one member of the
-    /// queried type happens to be declared. A generated reader fills an array — it reads the
-    /// payload into a span of rows it sized from the JSON — and there is no conversion written
-    /// from that into a <c>List</c>, so the member has to be declared as the array it is read as.
+    /// The shape that used to send people looking: a projection that is perfectly ordinary C# and
+    /// a document that is perfectly ordinary GraphQL, refused because of how one member of the
+    /// queried type happened to be declared. Only <c>T[]</c> was accepted, which is a strange
+    /// thing to be told about a model the serializer this replaced read without complaining.
     /// </para>
     /// <para>
-    /// Which used to be one of three things the reason offered. Naming the member and underlining
-    /// it is the difference between a rule to look up and a fix to make.
+    /// A reader accumulates a list as it reads, because that is the only shape that can be filled
+    /// without knowing the count first — so a member declared as a <c>List</c> is that list, with
+    /// no copy between them.
     /// </para>
     /// </remarks>
     [Test]
-    public void A_selected_collection_that_is_not_an_array_names_the_member()
-        => Declines("""
+    public void A_collection_is_held_as_the_member_declares_it()
+    {
+        var run = Run("""
             [GraphQLQuery]
-            private static Task<string[]> Listing(HttpClient client, CancellationToken token)
+            private static Task<string[]> Listed(HttpClient client, CancellationToken token)
                 => client.CreateQueryable<Listing>("listings")
                     .Select(l => l.Members.Select(m => m.Name).Joined())
                     .ToArrayAsync(token);
 
             internal static string Joined(this System.Collections.Generic.IEnumerable<string> values)
                 => string.Join(", ", values);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ listings { members { name } } }"));
+
+            // Declared as the member is, because the projection is the caller's own code and was
+            // written against that type — and filled with the list the reader accumulated.
+            Assert.That(run.Source, Does.Contain(
+                "public readonly global::System.Collections.Generic.List<"));
+
+            Assert.That(run.Source, Does.Contain("_members = _membersItems;"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A member declared read-only is held read-only, and costs nothing to hold.
+    /// </summary>
+    /// <remarks>
+    /// A row is a payload rather than a model: nothing may add to it, and a member typed as
+    /// something that can be added to says otherwise. Where the caller declared a read-only
+    /// collection this can say so — and where they did not, it cannot, because the projection
+    /// they wrote against a <c>List</c> is copied verbatim and has to go on compiling.
+    /// </remarks>
+    [Test]
+    public void A_member_declared_read_only_is_held_read_only()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<string[]> Listed(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Catalogue>("catalogues")
+                    .Select(c => c.Entries.Select(e => e.Name).Joined())
+                    .ToArrayAsync(token);
+
+            internal static string Joined(this System.Collections.Generic.IEnumerable<string> values)
+                => string.Join(", ", values);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain(
+                "public readonly global::System.Collections.Generic.IReadOnlyList<"));
+
+            Assert.That(run.Source, Does.Contain("_entries = _entriesItems;"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A member nothing knows how to build is refused, and told what would work.
+    /// </summary>
+    /// <remarks>
+    /// The set of conversions is the set that can be recognised with certainty — a constructor
+    /// taking a collection, or a collection expression the type says how to build. A conversion
+    /// guessed at here would be a reply read into the wrong shape rather than a build that fails,
+    /// so anything else is a refusal that names the member and the two ways out of it.
+    /// </remarks>
+    [Test]
+    public void A_collection_the_reader_cannot_build_recommends_a_read_only_one()
+        => Declines("""
+            [GraphQLQuery]
+            private static Task<int[]> Counted(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Hoard>("hoards")
+                    .Select(h => h.Tags.Count())
+                    .ToArrayAsync(token);
             """,
-            says: "'Members' is declared as 'List<Country>', and a selected collection has to be an array",
-            at: "Members");
+            says: "Declare it 'IReadOnlyCollection<string>', which the rows satisfy as they are",
+            at: "Tags");
+
+    /// <summary>
+    /// A projection of nothing but values that are not the row's still declines.
+    /// </summary>
 
     /// <summary>
     /// A member whose type the generated reader has no read for is named, and pointed at.
@@ -1435,6 +1506,38 @@ public class Listing
 
     /// <summary>A type with no getter of the reader's and no converter of the model's.</summary>
     public TimeSpan Span { get; set; }
+}
+
+/// <summary>A queried type whose collections are read-only, which is the shape this prefers.</summary>
+public class Catalogue
+{
+    public string Name { get; set; } = "";
+
+    public System.Collections.Generic.IReadOnlyCollection<Country> Entries { get; set; } = [];
+}
+
+/// <summary>A queried type holding many of something nothing knows how to build.</summary>
+public class Hoard
+{
+    public string Name { get; set; } = "";
+
+    public Sack Tags { get; set; } = new("");
+}
+
+/// <summary>
+/// Enumerable, and buildable no way this recognises: no constructor taking a collection, no
+/// parameterless one to add to, and nothing saying how a collection expression would make one.
+/// </summary>
+public sealed class Sack(string only) : System.Collections.Generic.IEnumerable<string>
+{
+    private readonly string _only = only;
+
+    public System.Collections.Generic.IEnumerator<string> GetEnumerator()
+    {
+        yield return _only;
+    }
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 }
 
 /// <summary>Somewhere a projection might read a value that is not the row's.</summary>

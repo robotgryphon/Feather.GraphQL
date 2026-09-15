@@ -340,8 +340,8 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
             if (reply is null)
             {
                 return Refused(unreadable,
-                    "its reply could not be modelled — a field the element does not have, a type with "
-                    + "no certain read, or a collection that is not an array");
+                    "its reply could not be modelled — a field the element does not have, or a type "
+                    + "with no certain read");
             }
 
             generated = true;
