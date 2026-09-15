@@ -177,8 +177,9 @@ public class CompiledQueryTests
     /// A result operator asks the server for a page and reduces what comes back.
     /// </summary>
     /// <remarks>
-    /// The page size is the compiler's own decision — First means one — so it is a constant in
-    /// the payload rather than a hole.
+    /// The page size is the compiler's own decision — First means one — so it goes into the
+    /// document as the number it is, and binds nothing. The filter's value is still a variable,
+    /// which is the difference the whole rule turns on: that one is the caller's.
     /// </remarks>
     [Test]
     public void A_result_operator_asks_for_its_page_and_reduces_to_it()
@@ -191,9 +192,84 @@ public class CompiledQueryTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(run.Source, Does.Contain("take: $v1"));
-            Assert.That(run.Source, Does.Contain("""\"v1\":1}}"""));
+            Assert.That(run.Source, Does.Contain(
+                "query($v0: String) { countries(where: { name: { eq: $v0 } }, take: 1) { name code } }"));
+
+            // One variable, the filter's, and no second one carrying a 1 the document already says.
+            Assert.That(run.Source, Does.Not.Contain("$v1"));
             Assert.That(run.Source, Does.Contain("The query returned no elements."));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A page the chain asked for with a number is written out too.
+    /// </summary>
+    /// <remarks>
+    /// The rule is about where the number comes from, not which operator asked: a literal and a
+    /// <c>const</c> are both known where the chain is written, and only a value handed to the
+    /// method is not. A chain binding nothing else then posts the constant body, since there is
+    /// no longer anything to write into it at run time.
+    /// </remarks>
+    [Test]
+    public void A_page_written_as_a_number_is_written_into_the_document()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country[]> Top(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries").Skip(5).Take(10).ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("query { countries(take: 10, skip: 5) { name code } }"));
+            Assert.That(run.Source, Does.Not.Contain("body.Write("));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>A <c>const</c> is as known as a literal, and read through its name.</summary>
+    [Test]
+    public void A_page_from_a_const_is_written_into_the_document()
+    {
+        var run = Run("""
+            private const int PageSize = 25;
+
+            [GraphQLQuery]
+            private static Task<Country[]> Page(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries").Take(PageSize).ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("query { countries(take: 25) { name code } }"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A page the method was handed is the one case only a variable can carry.
+    /// </summary>
+    /// <remarks>
+    /// The mirror of the cases above, and the reason the rule is about the value rather than the
+    /// operator: the same <c>Take</c> binds a variable here and writes a number there.
+    /// </remarks>
+    [Test]
+    public void A_page_from_a_parameter_stays_a_variable()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country[]> Paged(HttpClient client, int size, int from, CancellationToken token)
+                => client.CreateQueryable<Country>("countries").Skip(from).Take(size).ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain(
+                "query($v0: Int, $v1: Int) { countries(take: $v0, skip: $v1) { name code } }"));
+
+            Assert.That(run.Source, Does.Contain("body.Write(size)"));
+            Assert.That(run.Source, Does.Contain("body.Write(from)"));
             Assert.That(run.Diagnostics, Is.Empty);
         });
     }
@@ -248,6 +324,56 @@ public class CompiledQueryTests
             // this server was never asked to send.
             Assert.That(run.Source, Does.Not.Contain("\"items\"u8"));
             Assert.That(run.Source, Does.Not.Contain("\"totalCount\"u8"));
+        });
+    }
+
+    /// <summary>
+    /// A cursor-paged terminal names the connection's own argument, with the same number in it.
+    /// </summary>
+    /// <remarks>
+    /// Which argument a page goes into is the paging kind's to decide — <c>first</c> here, where
+    /// an unpaged field takes <c>take</c> — and the number in it is the compiler's either way.
+    /// </remarks>
+    [Test]
+    public void A_cursor_paged_terminal_writes_its_page_into_first()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country?> One(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries", o => o.Paging = PagingKind.Cursor)
+                    .FirstOrDefaultAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("query { countries(first: 1) { nodes { name code } } }"));
+            Assert.That(run.Source, Does.Not.Contain("$v0"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A last page is the one nothing but a terminal can ask for, so it is never a variable.
+    /// </summary>
+    /// <remarks>
+    /// There is no operator that hands <c>last</c> a size — <c>Last()</c> means one and nothing
+    /// else does — which is why the document carries the number and no binding exists for it.
+    /// </remarks>
+    [Test]
+    public void A_last_page_is_always_written_into_the_document()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<Country?> Newest(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries", o => o.Paging = PagingKind.Cursor)
+                    .LastOrDefaultAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("query { countries(last: 1) { nodes { name code } } }"));
+            Assert.That(run.Source, Does.Not.Contain("$v0"));
+            Assert.That(run.Diagnostics, Is.Empty);
         });
     }
 
@@ -785,7 +911,7 @@ public class CompiledQueryTests
         Assert.Multiple(() =>
         {
             Assert.That(run.Source, Does.Contain(
-                "{ countries(where: { name: { eq: $v0 } }, take: $v1) { name code } }"));
+                "{ countries(where: { name: { eq: $v0 } }, take: 1) { name code } }"));
 
             // The reduction the terminal asked for, substituted where the await was.
             Assert.That(run.Source, Does.Contain("rows[0]"));

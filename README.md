@@ -192,6 +192,11 @@ one of them says so in the document: a cost or complexity analyser runs over the
 variable is coerced, so an opaque input object is one it has to assume the worst of. Written out,
 the shape is the query's and only the values are late.
 
+A page size follows the same rule, and more simply: `FirstOrDefaultAsync()` is `take: 1` in the
+document, `Take(10)` is `take: 10`, and only a size the method was handed — `Take(size)` — becomes
+`take: $vN`. A number the compiler already knows gains nothing from being late, and costs the
+analyser the one figure that bounds the query.
+
 The cost is that a variable in a document has to declare its type, and what the schema calls a
 comparison's value is inferred from the CLR type against HotChocolate's defaults — `string` is
 `String`, `Guid` is `UUID`, `int` is `Int`. A type that could reasonably be called several things
@@ -219,8 +224,8 @@ from this table; anything else is an error.
 | `OrderBy` / `OrderByDescending`  | `order: $vN` — `[{"field":"ASC"}]`                               | Keys and directions are known at build time, so the whole argument is a **constant**, not a variable value. |
 | `ThenBy` / `ThenByDescending`    | appends to the same array                                        | Order of keys is the order you wrote them.                                                                  |
 | `Select(c => …)`                 | **becomes the selection set**                                    | Only the fields you project are requested. The last `Select` wins.                                          |
-| `Take(n)`                        | `take: $vN`, or `first: $vN` under cursor paging                 |                                                                                                             |
-| `Skip(n)`                        | `skip: $vN`                                                      | Not available under cursor paging — there is no offset to skip to.                                          |
+| `Take(n)`                        | `take: n`, or `first: n` under cursor paging                     | A literal or a `const` is written into the document; only a value the method was handed binds `$vN`.        |
+| `Skip(n)`                        | `skip: n`                                                        | Same rule. Not available under cursor paging — there is no offset to skip to.                               |
 
 ### Ending the chain
 
@@ -228,9 +233,9 @@ from this table; anything else is an error.
 | -------------------------------------- | ------------------------------------------------------------- | ------------------------------------ |
 | `ToArrayAsync()`                       | the selection as written                                      | `T[]`                                |
 | `ToListAsync()`                        | the selection as written                                      | `List<T>`                            |
-| `FirstAsync` / `FirstOrDefaultAsync`   | adds a page of **1**                                          | `T` / `T?`                           |
-| `SingleAsync` / `SingleOrDefaultAsync` | adds a page of **2** — enough to prove there was not a second | `T` / `T?`                           |
-| `LastAsync` / `LastOrDefaultAsync`     | `last: $vN`                                                   | `T` / `T?` — **cursor paging only**  |
+| `FirstAsync` / `FirstOrDefaultAsync`   | adds `take: 1` — `first: 1` under cursor paging                | `T` / `T?`                           |
+| `SingleAsync` / `SingleOrDefaultAsync` | adds `take: 2` — enough to prove there was not a second        | `T` / `T?`                           |
+| `LastAsync` / `LastOrDefaultAsync`     | `last: 1`                                                     | `T` / `T?` — **cursor paging only**  |
 | `AnyAsync`                             | asks for the cheapest scalar, page of 1                       | `bool`                               |
 | `CountAsync` / `LongCountAsync`        | `totalCount` and **no rows at all**                           | `int` / `long` — needs a paged field |
 
