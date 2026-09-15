@@ -432,6 +432,44 @@ every operator must be one it knows, and — the load-bearing rule — the chain
 document printed without that `First()` is a *wrong* document, not a missing one. So
 finishing means a result operator, a materializing call, or a `foreach`.
 
+**Which rows a lambda ranges over, decided by its type.** A projection's inner lambdas
+were bound one at a time and by position: the parameter of the lambda, over whatever the
+receiver held. That answers most operators and three of them badly.
+
+`Zip` and `SelectMany`'s result selector take two parameters, and a lambda with two
+parameters had no parameter this could name — so both of its parameters were names in no
+scope, and a name in no scope had just been taught to mean "a value of the caller's own,
+which asks the server for nothing". `(a, b) => a.Name` asked for nothing. The document went
+out without `name`, the generated code compiled because the row was the caller's own type,
+and `Name` came back null. Silent wrong data, which is the one outcome worse than a wrong
+document.
+
+So every parameter is bound, and which rows each one ranges over is decided by its *type*
+rather than its position: it is the rows the receiver holds, or the rows a flattening
+selector reached, or — where it is neither and not a scalar — something whose members
+cannot be placed at all. One rule serves `Zip`, `SelectMany`, `GroupBy` and the indexed
+overloads without knowing any of them by name. A lambda whose parameters cannot be read one
+for one against the delegate it binds to joins the scope unnamed, and an unnamed parameter
+anywhere makes every name in that projection something to understand outright rather than
+something to pass over — which is the conservatism that was there before constants were
+allowed in, put back where it belongs.
+
+**`SelectMany` hands back what its selector reached.** The operators after a flattening one
+name fields of the flattened rows, which live somewhere else in the document than the rows
+that were flattened. Following the selector to where it landed is what keeps
+`c.Countries.SelectMany(n => n.Continent.Countries).Select(m => m.Name)` from asking for
+`name` one level too high — and what lets it ask for nothing extra when the flattened member
+is a list of scalars, which needs no selection set at all.
+
+**A grouping's `Key` is not a field.** `IGrouping<K, T>` holds rows of the graph without
+being one, so a lambda over it ranges over those rows and `g.First().Name` is a field read
+like any other. `Key` is not: it is the key selector's own value, computed where the rows
+are. It is also a property, which is all the walk used to ask — so `key` was written into
+the document, and the reply then could not be modelled because the element has no such
+member. The question is now whether the type the node stands for actually *has* the
+property, as its own or as something it is, which `IGrouping` fails and every real field
+passes.
+
 **How many of something reaches the member that asked for it.** A generated reader
 accumulates a list as it reads one, because that is the only shape that can be filled
 without knowing the count in advance. For a long time the only member it would fill was

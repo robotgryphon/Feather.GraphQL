@@ -48,7 +48,7 @@ public sealed class UnboundedQueryAnalyzer : DiagnosticAnalyzer
 
         // The same reader the generator uses, so the two cannot disagree about what a chain
         // says. Null is an uncertain chain, which is left to run unremarked.
-        if (QueryChainReader.Read(invocation, method, context.SemanticModel, context.CancellationToken)
+        if (QueryChainReader.Read(invocation, method, context.SemanticModel, context.CancellationToken, new Refusals())
             is not { } consumptions)
             return;
 

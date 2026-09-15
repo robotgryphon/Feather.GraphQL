@@ -170,7 +170,8 @@ internal static class QueryChainReader
         InvocationExpressionSyntax entry,
         IMethodSymbol method,
         SemanticModel model,
-        CancellationToken token)
+        CancellationToken token,
+        Refusals refusals)
     {
         if (method.TypeArguments.Length != 1)
             return null;
@@ -178,7 +179,7 @@ internal static class QueryChainReader
         var facts = new ChainFacts { ElementType = method.TypeArguments[0] };
 
         return ReadEntryArguments(entry, method, model, facts, token)
-            ? Continue(entry, facts, model, token, hops: 0)
+            ? Continue(entry, facts, model, token, refusals, hops: 0)
             : null;
     }
 
@@ -191,6 +192,7 @@ internal static class QueryChainReader
         ChainFacts facts,
         SemanticModel model,
         CancellationToken token,
+        Refusals refusals,
         int hops)
     {
         var current = start;
@@ -202,7 +204,7 @@ internal static class QueryChainReader
             if (model.GetSymbolInfo(call, token).Symbol is not IMethodSymbol op)
                 return null;
 
-            var outcome = Apply(op, call, facts, model, token);
+            var outcome = Apply(op, call, facts, model, token, refusals);
 
             if (outcome == Step.Decline)
                 return null;
@@ -217,7 +219,7 @@ internal static class QueryChainReader
             return [facts];
 
         return hops < MaximumHops
-            ? FollowLocal(current, facts, model, token, hops)
+            ? FollowLocal(current, facts, model, token, refusals, hops)
             : null;
     }
 
@@ -234,6 +236,7 @@ internal static class QueryChainReader
         ChainFacts facts,
         SemanticModel model,
         CancellationToken token,
+        Refusals refusals,
         int hops)
     {
         if (chain.Parent is not EqualsValueClauseSyntax { Parent: VariableDeclaratorSyntax declarator }
@@ -257,7 +260,7 @@ internal static class QueryChainReader
             if (identifier.Parent is AssignmentExpressionSyntax assignment && assignment.Left == identifier)
                 return null;
 
-            var branch = Continue(identifier, facts.Copy(), model, token, hops + 1);
+            var branch = Continue(identifier, facts.Copy(), model, token, refusals, hops + 1);
             if (branch is null)
                 return null;
 
@@ -299,7 +302,8 @@ internal static class QueryChainReader
         InvocationExpressionSyntax call,
         ChainFacts facts,
         SemanticModel model,
-        CancellationToken token)
+        CancellationToken token,
+        Refusals refusals)
     {
         string? container = Outermost(op.ContainingType)?.ToDisplayString();
 
@@ -325,9 +329,17 @@ internal static class QueryChainReader
                 // WithGraphQLArguments would have set, so a non-literal name is one this cannot
                 // know.
                 if (model.GetConstantValue(argument.Expression, token).Value is string name)
+                {
                     facts.FilterArgument = name;
+                }
                 else
+                {
+                    refusals.Note(argument.Expression,
+                        "the argument a Where names has to be a literal, since it is written into the "
+                        + "document at build time");
+
                     return Step.Decline;
+                }
             }
 
             facts.HasFilter = true;
@@ -361,7 +373,14 @@ internal static class QueryChainReader
             case "Select":
                 if (call.ArgumentList.Arguments.Count != 1
                     || call.ArgumentList.Arguments[0].Expression is not LambdaExpressionSyntax lambda)
+                {
+                    refusals.Note(Named(call),
+                        "a Select a query is compiled from takes one lambda written at the call — an "
+                        + "indexed overload, or a selector handed in from somewhere else, is one there is "
+                        + "no syntax here to read");
+
                     return Step.Decline;
+                }
 
                 // Last Select wins, as the runtime parser does.
                 facts.Projection = lambda;
@@ -387,10 +406,22 @@ internal static class QueryChainReader
             case "Count": return Result(facts, ResultKind.Count, call);
             case "LongCount": return Result(facts, ResultKind.LongCount, call);
 
+            // Everything else Queryable offers. They compile against `IQueryable<T>` and mean
+            // nothing to a document: the server sends rows, and flattening, grouping or joining
+            // them is a thing to do to rows rather than a thing to ask for.
             default:
+                refusals.Note(Named(call),
+                    $"'{op.Name}' is not one of the operators a query can be compiled from — a document "
+                    + "asks the server for rows, and reshaping them is something to do over the rows the "
+                    + "query came back with, inside the Select or after the await");
+
                 return Step.Decline;
         }
     }
+
+    /// <summary>The name of the operator being called, which is what a message is about.</summary>
+    private static SyntaxNode Named(InvocationExpressionSyntax call)
+        => call.Expression is MemberAccessExpressionSyntax access ? access.Name : call.Expression;
 
     /// <summary>Captures an ordering's key, or notes that it could not be.</summary>
     /// <remarks>

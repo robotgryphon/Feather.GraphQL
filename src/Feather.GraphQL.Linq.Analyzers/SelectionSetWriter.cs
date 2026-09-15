@@ -126,6 +126,30 @@ internal static class SelectionSetWriter
         /// <summary>The same scope with one more row in it, for the body of a nested lambda.</summary>
         public Scope With(string? name, Reach reach) => new(name, reach, this);
 
+        /// <summary>
+        /// Whether the scope holds a parameter this could not name.
+        /// </summary>
+        /// <remarks>
+        /// The load-bearing flag. A name that is in no scope is ordinarily a value of the
+        /// caller's own, which asks the server for nothing — but where a parameter could not be
+        /// named, a read of that parameter looks exactly the same, and calling it a value of the
+        /// caller's own would drop a field the shaping then reads off a row that has not got it.
+        /// So where anything is opaque, a name in no scope is a refusal instead.
+        /// </remarks>
+        public bool Opaque
+        {
+            get
+            {
+                for (var scope = this; scope is not null; scope = scope._outer)
+                {
+                    if (scope._name is null)
+                        return true;
+                }
+
+                return false;
+            }
+        }
+
         /// <summary>What a name in scope reads from, or null when it is not one of the rows.</summary>
         public Reach? Find(string name)
         {
@@ -149,11 +173,8 @@ internal static class SelectionSetWriter
         /// </remarks>
         public bool Mentions(SyntaxNode node)
         {
-            for (var scope = this; scope is not null; scope = scope._outer)
-            {
-                if (scope._name is null)
-                    return true;
-            }
+            if (Opaque)
+                return true;
 
             foreach (var name in node.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
             {
@@ -334,13 +355,12 @@ internal static class SelectionSetWriter
                 if (reach.Outside)
                     return true;
 
-                // Expanded from what the chain reads rather than from what it produces: a chain
-                // that named no field at all still needs the member it ran over to carry a
-                // selection set, and the scalars of whatever it turned that member into would be
-                // fields of a type the node does not stand for.
-                var origin = Origin(invocation);
-
-                return Expand(TypeOf(origin, model, token), reach.Node!, origin, refusals);
+                // Expanded by what the node stands for rather than by what the chain started
+                // from: a chain that named no field at all still needs the member it ran over to
+                // carry a selection set, and the fields of whatever the chain turned those rows
+                // into are fields the node does not stand for. The two are the same member until
+                // an operator flattens, and then they are not.
+                return Expand(reach.Element, reach.Node!, Origin(invocation), refusals);
             }
 
             // Any other call — a method of the caller's own, an extension over what a member
@@ -459,18 +479,47 @@ internal static class SelectionSetWriter
                 if (nested.Declined)
                     return Reach.No;
 
+                // A flattening operator hands back what its selector returned rather than what it
+                // ran over, so the operators after it name fields of that — which is somewhere
+                // else in the document. Following the selector to where it lands is what keeps
+                // those fields from being asked for one level too high.
+                bool flattens = access.Name.Identifier.ValueText == "SelectMany";
+                var produced = Reach.None;
+
                 foreach (var argument in invocation.ArgumentList.Arguments)
                 {
                     if (argument.Expression is not LambdaExpressionSyntax lambda)
                         continue;
 
-                    var inner = scope.With(Parameter(lambda), Ranges(lambda, nested, model, token));
+                    var inner = Inside(lambda, scope, nested, produced, model, token);
+
+                    if (flattens && produced.Outside && produced.Node is null)
+                    {
+                        produced = CollectSequence(lambda.Body, inner, model, token, refusals);
+
+                        if (produced.Declined)
+                            return Reach.No;
+
+                        continue;
+                    }
 
                     if (!Collect(lambda.Body, inner, model, token, refusals))
                         return Reach.No;
                 }
 
-                return nested;
+                if (produced.Node is null)
+                    return nested;
+
+                // The member the chain ran over still has to carry a selection set of its own,
+                // whether or not the selector named anything on it — the flattened rows hang
+                // below it, and a field with an empty one is not a document a server accepts.
+                if (nested.Node is not null
+                    && !Expand(nested.Element, nested.Node, access.Expression, refusals))
+                    return Reach.No;
+
+                // What the operators after this run over is what the selector reached, which is
+                // somewhere else in the document than what it ran over.
+                return produced;
             }
 
             // A call this does not know is still something the operators in front of it read
@@ -482,9 +531,15 @@ internal static class SelectionSetWriter
                 return Descend(member, scope, model, token, refusals);
 
             // A row, or a collection of the caller's own held in a parameter — told apart by
-            // whether the name is one of the rows in scope.
+            // whether the name is one of the rows in scope, which is a distinction only worth
+            // drawing while every row in scope can be named.
             case IdentifierNameSyntax identifier:
-                return scope.Find(identifier.Identifier.ValueText) ?? Reach.None;
+            {
+                if (scope.Find(identifier.Identifier.ValueText) is { } named)
+                    return named;
+
+                return scope.Opaque ? Cannot(refusals, identifier, Opaquely(identifier)) : Reach.None;
+            }
 
             default:
                 return Cannot(refusals, node,
@@ -503,26 +558,70 @@ internal static class SelectionSetWriter
     /// for, so binding it there would ask the server for fields that are not the member's —
     /// unless what it produced is a scalar, which has no fields to name at all.
     /// </remarks>
-    private static Reach Ranges(
+    private static Scope Inside(
         LambdaExpressionSyntax lambda,
+        Scope scope,
         Reach over,
+        Reach produced,
         SemanticModel model,
         CancellationToken token)
     {
-        if (over.Node is null
-            || over.Element is null
-            || GraphQLTypeFacts.IsScalar(over.Element)
-            || model.GetSymbolInfo(lambda, token).Symbol
-                is not IMethodSymbol { Parameters.Length: 1 } written)
-            return Reach.None;
+        var names = Parameters(lambda);
 
-        var ranges = GraphQLTypeFacts.Unwrap(written.Parameters[0].Type);
+        // A lambda whose parameters cannot be read one for one against the delegate it binds to
+        // is one whose reads cannot be placed. It joins the scope unnamed, which makes every name
+        // inside it something to understand outright rather than something to pass over.
+        if (names is null
+            || model.GetSymbolInfo(lambda, token).Symbol is not IMethodSymbol written
+            || written.Parameters.Length != names.Count)
+            return scope.With(null, Reach.No);
 
-        if (SymbolEqualityComparer.Default.Equals(ranges, over.Element))
+        for (int i = 0; i < names.Count; i++)
+            scope = scope.With(names[i], Ranges(written.Parameters[i].Type, over, produced));
+
+        return scope;
+    }
+
+    /// <summary>
+    /// What one parameter of such a lambda ranges over.
+    /// </summary>
+    /// <remarks>
+    /// Decided by its type rather than by its position, which is what lets one rule serve every
+    /// operator: <c>Zip</c> hands both of its parameters rows of the sequences it was given,
+    /// <c>SelectMany</c>'s result selector hands one of each, and neither needs to be known here
+    /// by name. What a projection turned the rows into is not a row of the graph, and its members
+    /// are not fields — unless it turned them into a scalar, which has no members to name.
+    /// </remarks>
+    private static Reach Ranges(ITypeSymbol parameter, Reach over, Reach produced)
+    {
+        var ranges = GraphQLTypeFacts.Unwrap(parameter);
+
+        // What a flattening selector reached is the more particular answer, so it is asked first.
+        if (Stands(produced, ranges))
+            return produced;
+
+        if (Stands(over, ranges))
             return over;
 
         return GraphQLTypeFacts.IsScalar(ranges) ? Reach.None : Reach.No;
     }
+
+    /// <summary>Whether a node stands for rows of this type.</summary>
+    private static bool Stands(Reach reach, ITypeSymbol type)
+        => reach.Node is not null
+            && reach.Element is not null
+            && !GraphQLTypeFacts.IsScalar(reach.Element)
+            && SymbolEqualityComparer.Default.Equals(type, reach.Element);
+
+    /// <summary>A lambda's parameter names, in order, or null when they cannot be read.</summary>
+    private static List<string>? Parameters(LambdaExpressionSyntax lambda)
+        => lambda switch
+        {
+            SimpleLambdaExpressionSyntax simple => [simple.Parameter.Identifier.ValueText],
+            ParenthesizedLambdaExpressionSyntax parenthesized
+                => [.. parenthesized.ParameterList.Parameters.Select(x => x.Identifier.ValueText)],
+            _ => null
+        };
 
     /// <summary>
     /// Collects what a call outside <c>System.Linq</c> reads, and stops there.
@@ -625,12 +724,7 @@ internal static class SelectionSetWriter
         CancellationToken token,
         Refusals refusals)
         => argument is LambdaExpressionSyntax lambda
-            ? Collect(
-                lambda.Body,
-                scope.With(Parameter(lambda), Ranges(lambda, source, model, token)),
-                model,
-                token,
-                refusals)
+            ? Collect(lambda.Body, Inside(lambda, scope, source, Reach.None, model, token), model, token, refusals)
             : Collect(argument, scope, model, token, refusals);
 
     /// <summary>The expression a client-side chain reads from, which its operators run over.</summary>
@@ -710,7 +804,7 @@ internal static class SelectionSetWriter
         if (reach.Node is not { } from)
             return reach;
 
-        var path = new List<(string Name, Location Where, ITypeSymbol Type)>();
+        var path = new List<(string Name, Location Where, IPropertySymbol Property)>();
         var current = expression;
 
         while (current != root)
@@ -758,8 +852,7 @@ internal static class SelectionSetWriter
                             + "ask the server for");
                     }
 
-                    path.Insert(0, (
-                        GraphQLTypeFacts.FieldName(property), member.Name.GetLocation(), property.Type));
+                    path.Insert(0, (GraphQLTypeFacts.FieldName(property), member.Name.GetLocation(), property));
 
                     current = member.Expression;
                     continue;
@@ -775,16 +868,22 @@ internal static class SelectionSetWriter
         var node = from;
         var element = reach.Element;
 
-        foreach (var (name, where, type) in path)
+        foreach (var (name, where, property) in path)
         {
+            // A member of something the chain made rather than of the row it stands for —
+            // `IGrouping.Key`, whose value came from the key selector and is not a field any
+            // server has. It is read where the rows are, like anything else client-side.
+            if (element is not null && !Holds(element, property))
+                return Reach.None;
+
             node = node.Child(name, where);
-            element = GraphQLTypeFacts.Unwrap(type);
+            element = GraphQLTypeFacts.Unwrap(property.Type);
 
             // A field that needs no selection set ends the path: what is written after it reads
             // the value the server sent — `c.Name.Length`, `c.Founded.Year` — which happens where
             // the rows are and asks for nothing. Tracing on would ask for `name { length }`,
             // which is not a thing a schema has.
-            if (GraphQLTypeFacts.IsLeaf(type))
+            if (GraphQLTypeFacts.IsLeaf(property.Type))
                 break;
         }
 
@@ -822,7 +921,14 @@ internal static class SelectionSetWriter
     {
         if (root is IdentifierNameSyntax identifier)
         {
-            if (scope.Find(identifier.Identifier.ValueText) is not { } named || named.Outside)
+            if (scope.Find(identifier.Identifier.ValueText) is not { } named)
+            {
+                return scope.Opaque
+                    ? Cannot(refusals, identifier, Opaquely(identifier))
+                    : Reach.None;
+            }
+
+            if (named.Outside)
                 return Reach.None;
 
             return named.Node is null ? Cannot(refusals, identifier, Unplaceable(identifier)) : named;
@@ -858,12 +964,47 @@ internal static class SelectionSetWriter
         return landed;
     }
 
+    /// <summary>
+    /// Whether a type has this property, as one of its own or as something it is.
+    /// </summary>
+    /// <remarks>
+    /// The question a member chain asks at every step, and for a long time it asked only whether
+    /// the member was a property at all. <c>IGrouping.Key</c> is a property, and grouping rows of
+    /// the graph leaves a lambda ranging over something that holds them without being one — so
+    /// <c>g.Key</c> was written into the document as a field, which no schema has.
+    /// </remarks>
+    private static bool Holds(ITypeSymbol element, IPropertySymbol property)
+    {
+        if (property.ContainingType is not { } owner)
+            return false;
+
+        for (var type = element; type is not null; type = type.BaseType)
+        {
+            if (SymbolEqualityComparer.Default.Equals(type.OriginalDefinition, owner.OriginalDefinition))
+                return true;
+        }
+
+        foreach (var implemented in element.AllInterfaces)
+        {
+            if (SymbolEqualityComparer.Default.Equals(implemented.OriginalDefinition, owner.OriginalDefinition))
+                return true;
+        }
+
+        return false;
+    }
+
     /// <summary>Records why a read could not be placed, and answers a refusal.</summary>
     private static Reach Cannot(Refusals refusals, SyntaxNode where, string reason)
     {
         refusals.Note(where, reason);
         return Reach.No;
     }
+
+    /// <summary>Why a name cannot be told from a row while a lambda's parameters are unreadable.</summary>
+    private static string Opaquely(IdentifierNameSyntax identifier)
+        => $"'{identifier}' cannot be told from a row here: a lambda in this projection has parameters "
+        + "this could not read, so a name that is not one of them might still be one of its rows — and "
+        + "a field left out of the document is one the rows come back without";
 
     /// <summary>Why reading a field off a lambda's own parameter cannot be placed.</summary>
     private static string Unplaceable(IdentifierNameSyntax identifier)

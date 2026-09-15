@@ -353,9 +353,27 @@ take from it.
 **Only `T[]` and `List<T>` come back as sequences.** There is no `IAsyncEnumerable` terminal;
 streaming was removed rather than half-supported.
 
-**`GroupBy`, `Join`, `SelectMany` and the rest of `IQueryable` are visible but not supported.**
-They compile as far as the type system is concerned and then fail as `FGQL015`. The type keeps
-`IQueryable<T>` for familiarity, and the diagnostics carry the weight instead.
+**`GroupBy`, `Join`, `SelectMany` and the rest of `IQueryable` are visible but not supported *in
+the chain*.** A document asks the server for rows of one field; flattening, grouping or joining
+them is a thing to do to rows, so the operator has no translation rather than a missing one. They
+compile as far as the type system is concerned and then fail as `FGQL015`, naming the operator:
+
+```
+'SelectMany' is not one of the operators a query can be compiled from — a document asks the
+server for rows, and reshaping them is something to do over the rows the query came back with,
+inside the Select or after the await
+```
+
+Which is exactly where they do work. Inside the `Select` they are client-side code like any other,
+and the fields they read are asked for where they land — `c.Countries.SelectMany(n =>
+n.Continent.Countries).Select(m => m.Name)` asks for `countries { continent { countries { name }
+} }`, with `name` under the countries the selector reached rather than the ones it ran over. After
+the `await` they run over the rows that came back: `(await …ToArrayAsync(token)).SelectMany(x =>
+x).ToArray()`.
+
+A grouping's `Key` is not a field — it is the key selector's value, computed where the rows are —
+so `GroupBy(n => n.Code).Select(g => g.Key)` asks for `code` and nothing else. What the grouping
+holds is still rows, so `g.First().Name` asks for `name` too.
 
 **Declared queries are stricter than chains.** `[GraphQLQuery("query { … }")]` on a partial method
 implements it from the document. Aliases, fragments, directives and multiple root fields are not

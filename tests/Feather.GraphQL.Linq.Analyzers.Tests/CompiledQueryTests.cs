@@ -960,6 +960,206 @@ public class CompiledQueryTests
         });
     }
 
+    // ---- flattening and grouping ------------------------------------------------------------
+
+    /// <summary>
+    /// A chain's own <c>SelectMany</c> is not a query, and the refusal names it.
+    /// </summary>
+    /// <remarks>
+    /// A document asks the server for rows of one field. Flattening them is a thing to do to rows
+    /// — the server has no say in it and no syntax for it — so the operator has no translation
+    /// rather than a missing one. What used to be said about it was that the chain "could not be
+    /// read as one query ending in this method", which is true of a dozen other faults too.
+    /// </remarks>
+    [Test]
+    public void A_chains_own_SelectMany_is_refused_by_name()
+        => Declines("""
+            [GraphQLQuery]
+            private static Task<string[]> Flattened(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .SelectMany(c => c.Continent.Countries)
+                    .Select(n => n.Name)
+                    .ToArrayAsync(token);
+            """,
+            says: "'SelectMany' is not one of the operators a query can be compiled from",
+            at: "SelectMany");
+
+    /// <summary>The same of <c>GroupBy</c>, and of everything else <c>Queryable</c> offers.</summary>
+    [Test]
+    public void A_chains_own_GroupBy_is_refused_by_name()
+        => Declines("""
+            [GraphQLQuery]
+            private static Task<string[]> Grouped(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .GroupBy(c => c.Code)
+                    .Select(g => g.Key)
+                    .ToArrayAsync(token);
+            """,
+            says: "'GroupBy' is not one of the operators a query can be compiled from",
+            at: "GroupBy");
+
+    /// <summary>
+    /// Inside the projection it is ordinary client-side code, and the fields it names are asked
+    /// for where they are.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The names of the countries in a continent, flattened: <c>SelectMany</c> runs over rows that
+    /// have already arrived, so what the compiler has to get right is which fields it reads and
+    /// where they sit — <c>name</c> belongs under the countries the selector reached, not under
+    /// the ones it ran over.
+    /// </para>
+    /// <para>
+    /// Getting that wrong is not a build failure but a bigger document, so the assertion is the
+    /// document itself rather than the absence of a diagnostic.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public void A_SelectMany_inside_the_projection_asks_where_it_lands()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<string[][]> Neighbours(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Continent>("continents")
+                    .Select(c => c.Countries.SelectMany(n => n.Continent.Countries).Select(m => m.Name).ToArray())
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            // One `name`, at the level the flattened rows came from.
+            Assert.That(run.Source,
+                Does.Contain("{ continents { countries { continent { countries { name } } } } }"));
+
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>A flattened member that is a list of scalars needs no selection set at all.</summary>
+    [Test]
+    public void A_SelectMany_over_scalars_asks_for_the_member_alone()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<string[][]> Tagged(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Listing>("listings")
+                    .Select(l => l.Related.SelectMany(r => r.Tags).ToArray())
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ listings { related { tags } } }"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A grouping's <c>Key</c> is not a field, and asking for one is not a document any server
+    /// answers.
+    /// </summary>
+    /// <remarks>
+    /// <c>Key</c> is a property, which is all this used to ask — so <c>g.Key</c> was written into
+    /// the document beside the fields the key selector had already asked for, and the reply then
+    /// could not be modelled because <c>Country</c> has no such member. The value is the key
+    /// selector's, computed where the rows are, and the fields it reads are what the document
+    /// needs.
+    /// </remarks>
+    [Test]
+    public void A_groupings_key_is_read_where_the_rows_are()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<string[][]> Grouped(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Continent>("continents")
+                    .Select(c => c.Countries.GroupBy(n => n.Code).Select(g => g.Key).ToArray())
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ continents { countries { code } } }"));
+            Assert.That(run.Source, Does.Not.Contain("key"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>What a grouping holds is still rows, and fields read off those are asked for.</summary>
+    [Test]
+    public void A_field_read_through_a_grouping_is_asked_for()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<string[][]> Grouped(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Continent>("continents")
+                    .Select(c => c.Countries.GroupBy(n => n.Code).Select(g => g.First().Name).ToArray())
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ continents { countries { code name } } }"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>
+    /// A lambda that takes more than one row binds all of them, by type.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The regression this is here for was silent, which is the only kind worth writing a test
+    /// this specific for. A two-parameter lambda had no parameter this could name, so both of its
+    /// parameters were names in no scope — and a name in no scope had just been taught to mean "a
+    /// value of the caller's own, which asks the server for nothing". <c>a.Name</c> asked for
+    /// nothing, the document went out without <c>name</c>, the generated code compiled because
+    /// the row was the caller's own type, and <c>Name</c> came back null.
+    /// </para>
+    /// <para>
+    /// Deciding each parameter by its type rather than by its position is what makes one rule
+    /// serve <c>Zip</c>, <c>SelectMany</c>'s result selector and the indexed overloads alike.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public void A_lambda_taking_two_rows_binds_both()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static Task<string[][]> Paired(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Continent>("continents")
+                    .Select(c => c.Countries.Where(n => n.Code != "")
+                        .Zip(c.Countries, (a, b) => a.Name + b.Code)
+                        .ToArray())
+                    .ToArrayAsync(token);
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ continents { countries { code name } } }"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
+    /// <summary>Flattening the rows after the await, which is where a chain's own would have to go.</summary>
+    [Test]
+    public void The_rows_may_be_flattened_after_the_await()
+    {
+        var run = Run("""
+            [GraphQLQuery]
+            private static async Task<string[]> Names(HttpClient client, CancellationToken token)
+                => (await client.CreateQueryable<Continent>("continents")
+                    .Select(c => c.Countries.Select(n => n.Name).ToArray())
+                    .ToArrayAsync(token)).SelectMany(x => x).ToArray();
+            """);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Does.Contain("{ continents { countries { name } } }"));
+            Assert.That(run.Source, Does.Contain("return (rows).SelectMany(x => x).ToArray();"));
+            Assert.That(run.Diagnostics, Is.Empty);
+        });
+    }
+
     // ---- what a refusal says, and what it points at -----------------------------------------
 
     /// <summary>
@@ -1506,6 +1706,12 @@ public class Listing
 
     /// <summary>A type with no getter of the reader's and no converter of the model's.</summary>
     public TimeSpan Span { get; set; }
+
+    /// <summary>Many of itself, so a projection has something to flatten.</summary>
+    public Listing[] Related { get; set; } = [];
+
+    /// <summary>A list of scalars, which needs no selection set of its own.</summary>
+    public string[] Tags { get; set; } = [];
 }
 
 /// <summary>A queried type whose collections are read-only, which is the shape this prefers.</summary>

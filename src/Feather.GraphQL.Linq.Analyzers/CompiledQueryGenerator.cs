@@ -203,10 +203,11 @@ public sealed class CompiledQueryGenerator : IIncrementalGenerator
                 + "as a parameter, or hold it on the declaring type");
         }
 
-        var completions = QueryChainReader.Read(entry, entryPoint, context.SemanticModel, token);
+        var unread = new Refusals();
+        var completions = QueryChainReader.Read(entry, entryPoint, context.SemanticModel, token, unread);
 
         if (completions is not { Count: 1 })
-            return Declined("its chain could not be read as one query ending in this method");
+            return Refused(unread.First, "its chain could not be read as one query ending in this method");
 
         var facts = completions[0];
 
