@@ -519,7 +519,9 @@ public class CompiledQueryTests
                     .ToArrayAsync(token);
 
             internal static string Describe(this Country country) => country.Name;
-            """);
+            """,
+            says: "'c' is used here as a 'Country' rather than read through",
+            at: "c");
 
     /// <summary>
     /// A type the projection names is written out in full, since the generated file does not
@@ -558,7 +560,9 @@ public class CompiledQueryTests
                 => client.CreateQueryable<Country>("countries")
                     .Select(c => new Renamed { Title = _suffix })
                     .ToArrayAsync(token);
-            """);
+            """,
+            says: "'_suffix' is private to 'Snippet'",
+            at: "_suffix");
 
     /// <summary>
     /// A helper the generated file can see is written with the type that declares it.
@@ -599,7 +603,9 @@ public class CompiledQueryTests
                 => client.CreateQueryable<Country>("countries")
                     .Select(c => new Renamed { Title = Shout(c.Name) })
                     .ToArrayAsync(token);
-            """);
+            """,
+            says: "'Shout' is private to 'Snippet'",
+            at: "Shout(c.Name)");
 
     /// <summary>
     /// One attribute, two kinds of query, told apart by the method's own shape.
@@ -953,6 +959,79 @@ public class CompiledQueryTests
         });
     }
 
+    // ---- what a refusal says, and what it points at -----------------------------------------
+
+    /// <summary>
+    /// A member the reply cannot be read into is named, and pointed at.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The shape that sends people looking: a projection that is perfectly ordinary C# and a
+    /// document that is perfectly ordinary GraphQL, refused because of how one member of the
+    /// queried type happens to be declared. A generated reader fills an array — it reads the
+    /// payload into a span of rows it sized from the JSON — and there is no conversion written
+    /// from that into a <c>List</c>, so the member has to be declared as the array it is read as.
+    /// </para>
+    /// <para>
+    /// Which used to be one of three things the reason offered. Naming the member and underlining
+    /// it is the difference between a rule to look up and a fix to make.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public void A_selected_collection_that_is_not_an_array_names_the_member()
+        => Declines("""
+            [GraphQLQuery]
+            private static Task<string[]> Listing(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Listing>("listings")
+                    .Select(l => l.Members.Select(m => m.Name).Joined())
+                    .ToArrayAsync(token);
+
+            internal static string Joined(this System.Collections.Generic.IEnumerable<string> values)
+                => string.Join(", ", values);
+            """,
+            says: "'Members' is declared as 'List<Country>', and a selected collection has to be an array",
+            at: "Members");
+
+    /// <summary>
+    /// A member whose type the generated reader has no read for is named, and pointed at.
+    /// </summary>
+    /// <remarks>
+    /// The other half of the same message: the read is declined because of the member's type
+    /// rather than because of how many of it there are, and the two are not fixed the same way.
+    /// </remarks>
+    [Test]
+    public void A_member_with_no_certain_read_names_the_member()
+        => Declines("""
+            [GraphQLQuery]
+            private static Task<Renamed[]> Timing(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Listing>("listings")
+                    .Select(l => new Renamed { Title = l.Span.ToString() })
+                    .ToArrayAsync(token);
+            """,
+            says: "'Span' is a 'TimeSpan', which the generated reader has no read for that is certainly right",
+            at: "Span");
+
+    /// <summary>
+    /// A value named in the projection that never reads the row.
+    /// </summary>
+    /// <remarks>
+    /// Naming a member is what puts a field in the document, so a member named on its own has to
+    /// be the row's own. One that is not asks the server for a field of something else, which is
+    /// why the chain is refused rather than the value quietly copied — and the way to reach such
+    /// a value from a compiled query is to hand it in as a parameter, which the message says.
+    /// </remarks>
+    [Test]
+    public void A_projection_naming_a_value_that_never_reads_the_row_says_so()
+        => Declines("""
+            [GraphQLQuery]
+            private static Task<Renamed[]> Labelled(HttpClient client, CancellationToken token)
+                => client.CreateQueryable<Country>("countries")
+                    .Select(c => new Renamed { Title = Labels.Default })
+                    .ToArrayAsync(token);
+            """,
+            says: "take the value as a parameter of the query method instead",
+            at: "Labels.Default");
+
     /// <summary>Asserts a method was left to the runtime, and said so.</summary>
     private static void Declines(string method)
     {
@@ -965,8 +1044,49 @@ public class CompiledQueryTests
         });
     }
 
-    /// <summary>What one run of the generator produced.</summary>
-    private readonly record struct Result(string? Source, string[] Diagnostics);
+    /// <summary>
+    /// Asserts a method was declined, that the reason named what was wrong, and that the
+    /// diagnostic underlines the part of the chain it is about.
+    /// </summary>
+    /// <remarks>
+    /// The location is asserted as the source it covers rather than as a line and a column, so a
+    /// case reads as the thing an author would see underlined in the editor — and so that editing
+    /// the method above does not move the assertion.
+    /// </remarks>
+    private static void Declines(string method, string says, string at)
+    {
+        var run = Run(method);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(run.Source, Is.Null, "a chain outside the compiled subset was compiled anyway");
+            Assert.That(run.Diagnostics, Is.EqualTo(new[] { "FGQL015" }));
+        });
+
+        var reported = run.Reported.Single();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(reported.GetMessage(), Does.Contain(says));
+            Assert.That(Underlined(reported), Is.EqualTo(at));
+        });
+    }
+
+    /// <summary>The source a diagnostic covers, which is what an editor draws a squiggle under.</summary>
+    private static string Underlined(Diagnostic diagnostic)
+        => diagnostic.Location.SourceTree is { } tree
+            ? tree.GetText().ToString(diagnostic.Location.SourceSpan)
+            : "";
+
+    /// <summary>
+    /// What one run of the generator produced.
+    /// </summary>
+    /// <remarks>
+    /// <c>Reported</c> is the diagnostics themselves, which the cases that care about a refusal
+    /// read for their reason and their location — <c>Diagnostics</c> is the same thing as IDs,
+    /// which is all most cases need.
+    /// </remarks>
+    private readonly record struct Result(string? Source, string[] Diagnostics, Diagnostic[] Reported);
 
     /// <summary>
     /// Compiles a method and a call to it, runs the generator, and returns what came out.
@@ -1027,7 +1147,8 @@ public class CompiledQueryTests
 
         return new Result(
             run.GeneratedTrees.Length == 0 ? null : run.GeneratedTrees[0].ToString(),
-            [.. run.Diagnostics.Select(d => d.Id)]);
+            [.. run.Diagnostics.Select(d => d.Id)],
+            [.. run.Diagnostics]);
     }
 
     /// <summary>
@@ -1072,4 +1193,29 @@ public class CompiledQueryTests
 
         return count;
     }
+}
+
+/// <summary>
+/// A queried type declared the two ways a generated reader cannot fill.
+/// </summary>
+/// <remarks>
+/// Declared here rather than added to the corpus model for the same reason <c>Region</c> is: the
+/// document tests compare the corpus byte for byte, and a member added there would change what
+/// they pin.
+/// </remarks>
+public class Listing
+{
+    public string Name { get; set; } = "";
+
+    /// <summary>Many of something, held as anything but the array a reader fills.</summary>
+    public System.Collections.Generic.List<Country> Members { get; set; } = [];
+
+    /// <summary>A type with no getter of the reader's and no converter of the model's.</summary>
+    public TimeSpan Span { get; set; }
+}
+
+/// <summary>Somewhere a projection might read a value that is not the row's.</summary>
+public static class Labels
+{
+    public static string Default { get; } = "none";
 }

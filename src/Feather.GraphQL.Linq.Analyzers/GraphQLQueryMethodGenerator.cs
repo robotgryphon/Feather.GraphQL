@@ -99,10 +99,14 @@ public sealed class GraphQLQueryMethodGenerator : IIncrementalGenerator
             declined = "its document is outside what can be read with certainty — an alias, a "
                 + "fragment, a directive, or more than one root field";
         }
-        else if (ResponseStructWriter.Describe(method.Name, shape.Element, selection, direct: true)
+        else if (ResponseStructWriter.Describe(method.Name, shape.Element, selection, direct: true, out var refusal)
             is not { } described)
         {
-            declined = "its reply holds something with no certain read — a field the returned type "
+            // The reason names the field rather than the three it might have been. There is
+            // nothing to point at — the document is a string in an attribute — so the diagnostic
+            // still lands on the method, which is where the document was written.
+            declined = refusal?.Reason
+                ?? "its reply holds something with no certain read — a field the returned type "
                 + "does not have, a type with no converter of its own, or a collection that is not "
                 + "an array";
         }

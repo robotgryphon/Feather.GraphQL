@@ -131,7 +131,33 @@ internal static class ResponseStructWriter
         ITypeSymbol element,
         SelectionSetWriter.Node selection,
         bool direct)
-        => Describe(prefix, "Row", element, selection, direct, new HashSet<string>(StringComparer.Ordinal));
+        => Describe(prefix, element, selection, direct, out _);
+
+    /// <inheritdoc cref="Describe(string, ITypeSymbol, SelectionSetWriter.Node, bool)"/>
+    /// <remarks>
+    /// <c>refusal</c> is which field the reply could not be modelled from, and why. Set only
+    /// where null is returned, and pointing at where that field was named whenever the source
+    /// named it — a document in an attribute names nothing this file can point at, and leaves the
+    /// location null rather than the reason unsaid.
+    /// </remarks>
+    public static Model? Describe(
+        string prefix,
+        ITypeSymbol element,
+        SelectionSetWriter.Node selection,
+        bool direct,
+        out Refusal? refusal)
+    {
+        var refusals = new Refusals();
+
+        var model = Describe(
+            prefix, "Row", element, selection, direct, new HashSet<string>(StringComparer.Ordinal), refusals);
+
+        refusal = model is null
+            ? refusals.First ?? new Refusal($"its reply holds a field of '{element.Name}' with no certain read", null)
+            : null;
+
+        return model;
+    }
 
     private static Model? Describe(
         string prefix,
@@ -139,8 +165,17 @@ internal static class ResponseStructWriter
         ITypeSymbol element,
         SelectionSetWriter.Node selection,
         bool direct,
-        HashSet<string> taken)
+        HashSet<string> taken,
+        Refusals refusals)
     {
+        // Records why one field of this reply could not be modelled, against wherever the
+        // selection says that field was named.
+        Model? Refuse(string field, string reason)
+        {
+            refusals.Note(new Refusal(reason, selection.Named(field)));
+            return null;
+        }
+
         // Reading into the caller's type means naming it, but the reader that builds it still
         // needs a name of its own — and one no other query sharing the file will take.
         string? target = direct ? Declared(element) : null;
@@ -149,7 +184,15 @@ internal static class ResponseStructWriter
 
         // A type that cannot be built and filled is one only a mirror can be read into.
         if (direct && !Constructible(element))
+        {
+            refusals.Note(new Refusal(
+                $"'{element.Name}' cannot be built by the generated reader — it needs a public "
+                + "constructor taking nothing, and a settable property for every field the query asks for",
+                null));
+
             return null;
+        }
+
         var members = new List<Member>();
         var properties = GraphQLTypeFacts.Properties(element)
             .ToDictionary(GraphQLTypeFacts.FieldName, x => x, StringComparer.Ordinal);
@@ -157,7 +200,11 @@ internal static class ResponseStructWriter
         foreach (string field in selection.Order)
         {
             if (!properties.TryGetValue(field, out var property))
-                return null;
+            {
+                return Refuse(field,
+                    $"the reply carries '{field}', which '{element.Name}' has no property for, so there is "
+                    + "nothing to read it into");
+            }
 
             var child = selection[field];
             var type = property.Type;
@@ -187,7 +234,12 @@ internal static class ResponseStructWriter
             // else — a List, an IReadOnlyCollection — would need a conversion this does not
             // write, and is left to the reading that can produce any shape.
             if (list && property.Type is not IArrayTypeSymbol { Rank: 1 })
-                return null;
+            {
+                return Refuse(field,
+                    $"'{property.Name}' is declared as '{Readable(property.Type)}', and a selected "
+                    + $"collection has to be an array — declare it '{Readable(item!)}[]', since the "
+                    + "generated reader fills an array rather than converting into a collection type");
+            }
 
             if (list)
                 type = item!;
@@ -200,11 +252,16 @@ internal static class ResponseStructWriter
                 // what lets a projection pass the whole object through rather than only its
                 // scalars. Where the type cannot be built — no accessible way to set it — the
                 // mirror is still there to fall back on.
-                var nested = Describe(prefix, property.Name, type, child, direct: true, taken)
-                    ?? Describe(prefix, property.Name, type, child, direct, taken);
+                // The mirror is the fallback, so the caller's own type failing to be built is not
+                // the reason for anything — only a refusal that survived the mirror too is.
+                var nested = Describe(prefix, property.Name, type, child, direct: true, taken, new Refusals())
+                    ?? Describe(prefix, property.Name, type, child, direct, taken, refusals);
 
                 if (nested is null)
-                    return null;
+                {
+                    return Refuse(field,
+                        $"nothing under '{property.Name}' could be read into a '{Readable(type)}'");
+                }
 
                 members.Add(new Member(
                     field, property.Name, nested.Name + (list ? "[]" : ""), "", nested, list));
@@ -213,15 +270,33 @@ internal static class ResponseStructWriter
             }
 
             if (Read(type) is not { } read)
-                return null;
+            {
+                return Refuse(field,
+                    $"'{property.Name}' is a '{Readable(type)}', which the generated reader has no read for "
+                    + "that is certainly right — give the member a [JsonConverter] of its own, or leave it "
+                    + "out of the projection");
+            }
 
             // Declared as the property is — an array when the payload carries many — while the
             // read is of one element, which is what the loop over the array calls.
             members.Add(new Member(field, property.Name, Declared(property.Type), read, null, list));
         }
 
-        return members.Count > 0 ? new Model(name, members, target, reader) : null;
+        if (members.Count == 0)
+        {
+            refusals.Note(new Refusal(
+                $"nothing was selected from '{element.Name}', and a reply with no fields has nothing to read",
+                null));
+
+            return null;
+        }
+
+        return new Model(name, members, target, reader);
     }
+
+    /// <summary>A type as a message names it: the C# spelling, with no <c>global::</c> on it.</summary>
+    private static string Readable(ITypeSymbol type)
+        => type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
 
     /// <summary>
     /// The converter a model declared for a member, on the member or on its type.

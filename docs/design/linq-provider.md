@@ -432,6 +432,30 @@ every operator must be one it knows, and — the load-bearing rule — the chain
 document printed without that `First()` is a *wrong* document, not a missing one. So
 finishing means a result operator, a materializing call, or a `foreach`.
 
+**A decline names what it refused, and points at it.** A refusal used to be a sentence
+about a whole method — "its reply could not be modelled — a field the element does not
+have, a type with no certain read, or a collection that is not an array" — reported
+against the method's name. Three faults wearing one message, and the author left to work
+out which of them it was and where. That is affordable while a decline costs an
+optimisation and a chain still runs the slow way; it is not affordable now that a decline
+costs the query.
+
+So every walk that can refuse carries a `Refusals`, and records the expression it stopped
+at with a reason naming the thing that is wrong: `'Permissions' is declared as
+'List<PermissionEdge>', and a selected collection has to be an array`. `FGQL015` is
+reported against that expression rather than against the method, which puts the squiggle
+under the member — the same place EF Core puts one when a call has no translation. The
+first refusal recorded wins, because a walk unwinds through the frames that called it and
+the innermost one is the frame that knows what is actually wrong; the ones above it know
+only which expression it was part of.
+
+Three faults become three messages here, because they are fixed three different ways: a
+selection set that could not be traced is about the projection, a reply that could not be
+modelled is about how the fields it named are *declared*, and a projection that could not
+be copied is about what it reads from outside the row. Where there is no syntax to point
+at — a declared query's document is a string in an attribute — the reason is still worth
+having, and the method's own name is where it lands.
+
 **Where it ends is also what bounds the body.** A `[GraphQLQuery]` method's body is one
 expression, and for a long time that was taken to mean the body *is* the chain — which it
 only looks like. `Task.FromResult(chain.ToArrayAsync(t).Result)` is one expression too, and

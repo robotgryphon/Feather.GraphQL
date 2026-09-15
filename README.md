@@ -296,6 +296,18 @@ scalars filled in, since which of them it reads is not visible. What it may not 
 row — `c.Describe()` on the element is `FGQL015`, because the row carries the element's fields
 without being its type.
 
+**A selected collection has to be a one-dimensional array.** The reply is read by generated code
+that fills an array — `Permission[]`, not `List<Permission>` or `IReadOnlyList<Permission>` — and
+there is no conversion written from one to the other. A member the query selects that is declared
+as anything else is `FGQL015`, naming the member: `'Permissions' is declared as
+'List<PermissionEdge>', and a selected collection has to be an array`. This is about members of the
+queried type, not about the terminal — `ToListAsync` still hands you a `List<T>`.
+
+**A refusal points at the part of the chain it is about.** `FGQL015` is reported against the
+expression the compiler stopped at rather than against the method, so the squiggle lands under the
+member, the call or the value that could not be translated, and the message names it. If a
+projection is refused and it is not obvious why, the underlined expression is the answer.
+
 **A nested object with no scalar fields cannot be selected on its own** — `FGQL014`. Say what to
 take from it.
 
